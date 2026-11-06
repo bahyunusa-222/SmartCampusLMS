@@ -60,7 +60,9 @@ const signUpload = async ({ userId, fileName, fileSize, purpose, mediaType }) =>
         } else if (mediaType === "image" && mediaTypeFromName(fileName, mediaType)) {
             contentType = mediaTypeFromName(fileName, mediaType);
         } else if (mediaType === "file") {
-            contentType = "application/octet-stream";
+            contentType = path.extname(fileName).toLowerCase() === ".pdf"
+                ? "application/pdf"
+                : "application/octet-stream";
         } else {
             throw new Error("Unsupported chat attachment format.");
         }
@@ -86,6 +88,7 @@ const signUpload = async ({ userId, fileName, fileSize, purpose, mediaType }) =>
 
 const mediaTypeFromName = (fileName, mediaType) => {
     const extension = path.extname(fileName).toLowerCase();
+    if (mediaType === "file" && extension === ".pdf") return "application/pdf";
     const types = mediaType === "voice"
         ? new Map([[".webm", "audio/webm"], [".m4a", "audio/mp4"], [".mp4", "audio/mp4"],
             [".ogg", "audio/ogg"], [".mp3", "audio/mpeg"], [".wav", "audio/wav"]])

@@ -7,7 +7,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import PublicRoute from "./components/PublicRoute";
 import RoleRoute from "./components/RoleRoute";
 
-import { readDefaultPage, readReducedMotion } from "./utils/settingsPreferences";
+import { readDefaultPage, readReducedMotion, readTextSize } from "./utils/settingsPreferences";
 
 import "./styles/global.css";
 
@@ -40,13 +40,8 @@ const readAccountId = () => {
 };
 
 const themeKey = (accountId) => `smartcampus:theme:${accountId}`;
-const textSizeKey = (accountId) => `smartcampus:text-size:${accountId}`;
 
 const readTheme = (accountId) => localStorage.getItem(themeKey(accountId)) === "dark" ? "dark" : "light";
-const readTextSize = (accountId) => {
-    const value = Number(localStorage.getItem(textSizeKey(accountId)) || 0);
-    return Number.isInteger(value) && value >= 0 && value <= 20 ? value : 0;
-};
 
 function App() {
     const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 768);
@@ -62,8 +57,8 @@ function App() {
     }, [accountId, theme]);
 
     useEffect(() => {
-        document.documentElement.style.fontSize = `${100 + textSize * 2}%`;
-        localStorage.setItem(textSizeKey(accountId), String(textSize));
+        document.documentElement.style.fontSize = `${textSize}%`;
+        localStorage.setItem(`smartcampus:text-size:${accountId}`, String(textSize));
     }, [accountId, textSize]);
 
     useEffect(() => {

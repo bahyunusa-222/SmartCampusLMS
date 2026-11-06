@@ -19,7 +19,6 @@ import {
     FaReply,
     FaSearch,
     FaShare,
-    FaSmile,
     FaStop,
     FaTimes,
     FaTrash,
@@ -579,9 +578,13 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             await Promise.all(mediaMessages.map(async (message) => {
                 try {
                     const response = await API.get(`/chat/messages/${message.id}/media`, {
-                        responseType: "blob"
+                        responseType: "blob",
+                        cacheForever: true
                     });
-                    const objectUrl = URL.createObjectURL(response.data);
+                    const mediaBlob = message.type === "file" && /\.pdf$/i.test(message.content || "")
+                        ? new Blob([response.data], { type: "application/pdf" })
+                        : response.data;
+                    const objectUrl = URL.createObjectURL(mediaBlob);
                     if (cancelled) {
                         URL.revokeObjectURL(objectUrl);
                         return;
@@ -942,32 +945,44 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         }
     };
 
-    const sendAttachment = async (file, type) => {
-        if (!file || !activeChat || sending) return;
-        const formData = new FormData();
-        if (activeChat.type === "course") formData.append("courseId", String(activeChat.id));
-        else formData.append("receiverProfileId", activeChat.id);
-        formData.append("type", type);
-        formData.append("content", file.name);
-        if (replyTo) formData.append("replyTo", replyTo.id);
+    const sendAttachment = async (files, type) => {
+        const attachments = Array.isArray(files) ? files : [files];
+        if (!attachments.length || !attachments[0] || !activeChat || sending) return;
+        const mediaGroupId = type === "image" && attachments.length > 1
+            ? crypto.randomUUID()
+            : null;
         setSending(true);
         setError("");
         setShowAttachments(false);
+        let sentCount = 0;
         try {
-            await appendUploadedFile(formData, file, {
-                purpose: "chat-media",
-                mediaType: type
-            });
-            const response = await API.post("/chat/messages", formData, {
-                headers: { "Content-Type": "multipart/form-data" }
-            });
-            setMessages((current) => [...current, response.data]);
+            for (const file of attachments) {
+                const formData = new FormData();
+                if (activeChat.type === "course") formData.append("courseId", String(activeChat.id));
+                else formData.append("receiverProfileId", activeChat.id);
+                formData.append("type", type);
+                formData.append("content", file.name);
+                if (mediaGroupId) formData.append("mediaGroupId", mediaGroupId);
+                if (replyTo) formData.append("replyTo", replyTo.id);
+                await appendUploadedFile(formData, file, {
+                    purpose: "chat-media",
+                    mediaType: type
+                });
+                const response = await API.post("/chat/messages", formData, {
+                    headers: { "Content-Type": "multipart/form-data" }
+                });
+                sentCount += 1;
+                setMessages((current) => [...current.filter((item) => item.id !== response.data.id), response.data]);
+            }
             setReplyTo(null);
             refresh().catch((requestError) => {
                 setError(requestError.response?.data?.message || "Attachment sent, but the chat list could not refresh.");
             });
         } catch (requestError) {
-            setError(requestError.response?.data?.message || requestError.message || "Unable to send this attachment.");
+            const reason = requestError.response?.data?.message || requestError.message || "Unable to send this attachment.";
+            setError(sentCount
+                ? `${sentCount} of ${attachments.length} files sent. ${reason}`
+                : reason);
         } finally {
             setSending(false);
         }
@@ -1099,7 +1114,10 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
 
     const downloadMessageMedia = async (message) => {
         try {
-            const response = await API.get(`/chat/messages/${message.id}/media`, { responseType: "blob" });
+            const response = await API.get(`/chat/messages/${message.id}/media`, {
+                responseType: "blob",
+                cacheForever: true
+            });
             const objectUrl = URL.createObjectURL(response.data);
             const anchor = document.createElement("a");
             anchor.href = objectUrl;
@@ -1333,10 +1351,28 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             if (message.id === newMessagesDividerId) {
                 entries.push({ type: "unread", key: `unread-${message.id}` });
             }
-            entries.push({ type: "message", key: message.id, message });
+            if (message.type === "image" && message.mediaGroupId) {
+                const currentGroup = entries[entries.length - 1];
+                if (currentGroup?.type === "image-group" &&
+                    currentGroup.groupId === message.mediaGroupId &&
+                    currentGroup.senderProfileId === message.senderProfileId) {
+                    currentGroup.messages.push(message);
+                } else {
+                    entries.push({
+                        type: "image-group",
+                        key: `image-group-${message.mediaGroupId}`,
+                        groupId: message.mediaGroupId,
+                        senderProfileId: message.senderProfileId,
+                        own: message.senderProfileId === profile?.id,
+                        messages: [message]
+                    });
+                }
+            } else {
+                entries.push({ type: "message", key: message.id, message });
+            }
         });
         return entries;
-    }, [messages, newMessagesDividerId]);
+    }, [messages, newMessagesDividerId, profile?.id]);
 
     if (!canUseChat || !user) return null;
 
@@ -2047,6 +2083,81 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     if (entry.type === "unread") {
                                         return <div className="wa-unread-divider" key={entry.key}><span>New messages</span></div>;
                                     }
+                                    if (entry.type === "image-group") {
+                                        return (
+                                            <div className={`wa-image-group${entry.own ? " wa-image-group-own" : ""}`} key={entry.key}>
+                                                {entry.messages.map((message) => (
+                                                    <article
+                                                        key={message.id}
+                                                        className={`wa-message wa-message-image${entry.own ? " wa-message-own" : ""}`}
+                                                        onContextMenu={(event) => {
+                                                            event.preventDefault();
+                                                            setContextMessage(message);
+                                                        }}
+                                                        onDoubleClick={() => setContextMessage(message)}
+                                                        onTouchStart={(event) => {
+                                                            const timer = window.setTimeout(() => setContextMessage(message), 650);
+                                                            event.currentTarget.dataset.longPressTimer = String(timer);
+                                                        }}
+                                                        onTouchEnd={(event) => {
+                                                            window.clearTimeout(Number(event.currentTarget.dataset.longPressTimer));
+                                                            const now = Date.now();
+                                                            if (lastTouchRef.current.messageId === message.id &&
+                                                                now - lastTouchRef.current.at < 350) {
+                                                                setContextMessage(message);
+                                                                lastTouchRef.current = { messageId: null, at: 0 };
+                                                            } else {
+                                                                lastTouchRef.current = { messageId: message.id, at: now };
+                                                            }
+                                                        }}
+                                                    >
+                                                        {!entry.own &&
+                                                            <strong className="wa-sender-name">@{message.sender?.username || activeChat?.participant?.username || "student"}</strong>}
+                                                        {mediaSources[message.id]
+                                                            ? <img className="wa-media-message" src={mediaSources[message.id]} alt={message.content || "Shared image"} loading="lazy" />
+                                                            : <span className="wa-voice-loading">Image is not saved on this device yet.</span>}
+                                                        <div className="wa-message-meta">
+                                                            <time>{formatTime(message.createdAt)}</time>
+                                                            {entry.own && message.receiverProfileId && message.deliveredAt
+                                                                ? <FaCheckDouble className={message.isRead ? "wa-read-tick" : "wa-delivered-tick"} aria-label={message.isRead ? "Seen" : "Delivered"} />
+                                                                : entry.own && <FaCheck aria-label="Sent" />}
+                                                        </div>
+                                                        {message.reactions?.length > 0 && (
+                                                            <div className="wa-message-reactions" aria-label="Message reactions">
+                                                                {message.reactions.map((reaction) => (
+                                                                    <button
+                                                                        type="button"
+                                                                        key={reaction.emoji}
+                                                                        className={reaction.reactedByMe ? "is-reacted" : ""}
+                                                                        aria-label={`${reaction.emoji}, ${reaction.count} reactions`}
+                                                                        onClick={() => toggleReaction(message, reaction.emoji)}
+                                                                    >
+                                                                        {reaction.emoji}<span>{reaction.count}</span>
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                        {contextMessage?.id === message.id && (
+                                                            <div className="wa-context-menu" role="menu">
+                                                                <div className="wa-quick-reactions" aria-label="Add reaction">
+                                                                    {["👍", "❤️", "😂", "😮", "😢", "🙏"].map((emoji) => (
+                                                                        <button type="button" key={emoji} aria-label={`React ${emoji}`} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>
+                                                                    ))}
+                                                                </div>
+                                                                <button type="button" onClick={() => { setReplyTo(message); setContextMessage(null); draftRef.current?.focus(); }}><FaReply /> Reply</button>
+                                                                <button type="button" onClick={() => copyMessage(message)}><FaCopy /> Copy</button>
+                                                                <button type="button" onClick={() => downloadMessageMedia(message)}><FaDownload /> Save to device</button>
+                                                                <button type="button" onClick={() => toggleSaveMessage(message)}>
+                                                                    <FaBookmark /> {savedMessages.some((item) => item.id === message.id) ? "Unsave" : "Save"}
+                                                                </button>
+                                                                <button type="button" onClick={() => deleteForMe(message)}><FaTrash /> Delete for me</button>
+                                                            </div>
+                                                        )}
+                                                    </article>
+                                                ))}
+                                            </div>
+                                        );
+                                    }
                                     const { message } = entry;
                                     const own = message.senderProfileId === profile.id;
                                     return (
@@ -2074,8 +2185,8 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                 }
                                             }}
                                         >
-                                            {activeChat?.type === "course" && !own && (
-                                                <strong className="wa-sender-name">@{message.sender?.username || "student"}</strong>
+                                            {!own && (
+                                                <strong className="wa-sender-name">@{message.sender?.username || activeChat?.participant?.username || "student"}</strong>
                                             )}
                                             {message.reply && <div className="wa-reply-quote">{message.reply.content}</div>}
                                             {(message.type === "gif" || message.type === "sticker") ? (
@@ -2095,7 +2206,16 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                     : <span className="wa-voice-loading">Loading image…</span>
                                             ) : message.type === "file" ? (
                                                 mediaSources[message.id]
-                                                    ? <a className="wa-file-message" href={mediaSources[message.id]} download={message.content}><FaFile aria-hidden="true" /> {message.content}</a>
+                                                    ? /\.pdf$/i.test(message.content || "")
+                                                        ? <div className="wa-pdf-preview">
+                                                            <iframe title={`Preview of ${message.content}`} src={mediaSources[message.id]} loading="lazy" />
+                                                            <div className="wa-pdf-actions">
+                                                                <span><FaFile aria-hidden="true" /> {message.content}</span>
+                                                                <a href={mediaSources[message.id]} target="_blank" rel="noreferrer">View</a>
+                                                                <a href={mediaSources[message.id]} download={message.content}>Download</a>
+                                                            </div>
+                                                        </div>
+                                                        : <a className="wa-file-message" href={mediaSources[message.id]} download={message.content}><FaFile aria-hidden="true" /> {message.content}</a>
                                                     : <span className="wa-voice-loading">Loading file…</span>
                                             ) : message.type === "contact" ? (() => {
                                                 const contact = parseContactCard(message.content);
@@ -2301,10 +2421,11 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                 className="chat-hidden-file-input"
                                 type="file"
                                 accept="image/jpeg,image/png,image/webp,image/gif"
+                                multiple
                                 onChange={(event) => {
-                                    const file = event.target.files?.[0];
+                                    const files = Array.from(event.target.files || []);
                                     event.target.value = "";
-                                    sendAttachment(file, "image");
+                                    sendAttachment(files, "image");
                                 }}
                             />
                             <input
@@ -2318,24 +2439,26 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                 }}
                             />
                             <form className="wa-compose" onSubmit={sendMessage}>
-                                <button type="button" className="wa-compose-icon" aria-label="Choose emoji" onClick={() => {
-                                    setShowAttachments(false);
-                                    setMediaTab("emoji");
-                                    setShowEmoji((current) => !current);
-                                }} aria-haspopup="dialog" title="Emoji, GIFs, and stickers"><FaSmile /></button>
                                 <button type="button" className="wa-compose-icon" aria-label="Add attachment" onClick={() => {
                                     setShowEmoji(false);
                                     setShowAttachments((current) => current ? false : true);
                                 }} aria-haspopup="dialog" title="Upload an image or file, or share a contact"><FaPaperclip /></button>
-                                <input
-                                    ref={draftRef}
-                                    value={draft}
-                                    onChange={onDraftChange}
-                                    onFocus={() => setContextMessage(null)}
-                                    placeholder="Type a message, use @ to mention"
-                                    maxLength={4000}
-                                    aria-label="Message"
-                                />
+                                <div className="wa-compose-message-field">
+                                    <button type="button" className="wa-compose-emoji" aria-label="Choose emoji" onClick={() => {
+                                        setShowAttachments(false);
+                                        setMediaTab("emoji");
+                                        setShowEmoji((current) => !current);
+                                    }} aria-haspopup="dialog" title="Emoji, GIFs, and stickers"><span aria-hidden="true">😊</span></button>
+                                    <input
+                                        ref={draftRef}
+                                        value={draft}
+                                        onChange={onDraftChange}
+                                        onFocus={() => setContextMessage(null)}
+                                        placeholder="Type a message, use @ to mention"
+                                        maxLength={4000}
+                                        aria-label="Message"
+                                    />
+                                </div>
                                 {recording && <span className="wa-recording-time" role="status">Recording {recordingSeconds}s</span>}
                                 {!draft.trim() ? (
                                     <button

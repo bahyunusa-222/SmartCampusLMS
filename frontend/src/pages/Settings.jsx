@@ -11,15 +11,16 @@ import {
     defaultPageStorageKey,
     notificationBadgeStorageKey,
     readDefaultPage,
+    readGesturePreferences,
     readNotificationBadge,
     readReducedMotion,
-    reducedMotionStorageKey
+    reducedMotionStorageKey,
+    gestureActions,
+    gestureOptions,
+    gestureStorageKey,
+    readTextSize,
+    textSizeSteps
 } from "../utils/settingsPreferences";
-
-const readTextSizePreference = (userId) => {
-    const value = Number(localStorage.getItem(`smartcampus:text-size:${userId ?? "guest"}`) || 0);
-    return Number.isInteger(value) && value >= 0 && value <= 20 ? value : 0;
-};
 
 const courseSettingsFrom = (course) => ({
     title: course.title || "",
@@ -173,7 +174,8 @@ const Settings = ({ theme, setTheme }) => {
     const [reducedMotion, setReducedMotion] = useState(() => readReducedMotion(user?.id));
     const [defaultPage, setDefaultPage] = useState(() => readDefaultPage(user?.id));
     const [notificationBadge, setNotificationBadge] = useState(() => readNotificationBadge(user?.id));
-    const [textSize, setTextSize] = useState(() => readTextSizePreference(user?.id));
+    const [textSize, setTextSize] = useState(() => readTextSize(user?.id));
+    const [gesturePreferences, setGesturePreferences] = useState(() => readGesturePreferences(user?.id));
     const [settingsSearch, setSettingsSearch] = useState("");
     const [profileStatus, setProfileStatus] = useState(null);
     const [profilePicture, setProfilePicture] = useState(() => readProfilePicture(user?.id));
@@ -264,7 +266,8 @@ const Settings = ({ theme, setTheme }) => {
     ] : showPreferences && !settingsSubpage ? [
         { to: "/settings/preferences/appearance", title: "Color theme", description: "Choose light or dark mode.", keywords: "appearance", Icon: FaSun },
         { to: "/settings/preferences/text-size", title: "Text size", description: "Adjust text size for your account.", keywords: "font accessibility", Icon: FaSlidersH },
-        { to: "/settings/preferences/motion", title: "Reduce motion", description: "Limit interface animations.", keywords: "animation accessibility", Icon: FaMoon },
+        { to: "/settings/preferences/motion", title: "Motion effects", description: "Choose whether interface animations are reduced.", keywords: "animation accessibility motion", Icon: FaMoon },
+        { to: "/settings/preferences/gestures", title: "Mobile gestures", description: "Assign double taps and swipes to navigation shortcuts.", keywords: "mobile gesture double triple tap swipe", Icon: FaSlidersH },
         { to: "/settings/preferences/home-page", title: "Default page", description: "Choose where SmartCampus opens after login.", keywords: "home start", Icon: FaBookOpen },
         { to: "/settings/preferences/notifications", title: "Notification badge", description: "Show or hide the unread count on the bell.", keywords: "alerts unread count", Icon: FaSlidersH }
     ] : showCourseSettings && !settingsSubpage && isStaff && selectedCourseId ? [
@@ -307,6 +310,7 @@ const Settings = ({ theme, setTheme }) => {
         "preferences/appearance": "Color theme",
         "preferences/text-size": "Text size",
         "preferences/motion": "Reduce motion",
+        "preferences/gestures": "Mobile gestures",
         "preferences/home-page": "Default page",
         "preferences/notifications": "Notification badge"
     };
@@ -329,7 +333,7 @@ const Settings = ({ theme, setTheme }) => {
                 ...(user?.role === "student" ? ["student-id", "phone"] : [])
             ],
             security: ["", "password"],
-            preferences: ["", "appearance", "text-size", "motion", "home-page", "notifications"]
+            preferences: ["", "appearance", "text-size", "motion", "gestures", "home-page", "notifications"]
         };
         if (
             (!isSettingsHome && (!validSubpages[settingsPage]?.includes(settingsSubpage) ||
@@ -505,8 +509,15 @@ const Settings = ({ theme, setTheme }) => {
     const changeTextSize = (value) => {
         setTextSize(value);
         localStorage.setItem(`smartcampus:text-size:${user?.id ?? "guest"}`, String(value));
-        document.documentElement.style.fontSize = `${100 + value * 2}%`;
+        document.documentElement.style.fontSize = `${value}%`;
         window.dispatchEvent(new Event("smartcampus:text-size-changed"));
+    };
+
+    const changeGesturePreference = (gesture, action) => {
+        const nextPreferences = { ...gesturePreferences, [gesture]: action };
+        setGesturePreferences(nextPreferences);
+        localStorage.setItem(gestureStorageKey(user?.id), JSON.stringify(nextPreferences));
+        window.dispatchEvent(new Event("smartcampus:gesture-preferences-updated"));
     };
 
     const changeDefaultPage = (page) => {
@@ -858,16 +869,19 @@ const Settings = ({ theme, setTheme }) => {
 
             {showPreferences && textSizePage && <section className="settings-section">
                 <div className="settings-preference-row">
-                    <div><strong>Text size</strong></div>
+                    <div>
+                        <strong>Text size</strong>
+                        <p>Adjust text in 25% steps; 100% is the standard size.</p>
+                    </div>
                     <label className="settings-text-size">
-                        <span>{textSize} / 20 · {100 + textSize * 2}%</span>
+                        <span>{textSize}%</span>
                         <input
                             type="range"
-                            min="0"
-                            max="20"
-                            step="1"
+                            min={textSizeSteps[0]}
+                            max={textSizeSteps[textSizeSteps.length - 1]}
+                            step="25"
                             value={textSize}
-                            aria-label="Text size increase from 0 to 20"
+                            aria-label="Text size percentage"
                             onChange={(event) => changeTextSize(Number(event.target.value))}
                         />
                     </label>
@@ -878,6 +892,7 @@ const Settings = ({ theme, setTheme }) => {
                 <div className="settings-preference-row">
                     <div>
                         <strong>Reduce motion</strong>
+                        <p>Turn this off to restore normal transitions and animation effects.</p>
                     </div>
                     <label className="settings-switch">
                         <input
@@ -888,6 +903,25 @@ const Settings = ({ theme, setTheme }) => {
                         <span className="settings-switch-track" aria-hidden="true" />
                         <span className="sr-only">Reduce motion</span>
                     </label>
+                </div>
+            </section>}
+
+            {showPreferences && settingsSubpage === "gestures" && <section className="settings-section">
+                <p className="settings-field-hint">Choose a mobile gesture and the page it opens. Gestures are detected on open page space, not on buttons, links, form fields, or vertical scrolling.</p>
+                <div className="settings-gesture-list">
+                    {gestureOptions.map((gesture) => (
+                        <label key={gesture.value}>
+                            {gesture.label}
+                            <select
+                                value={gesturePreferences[gesture.value] || ""}
+                                onChange={(event) => changeGesturePreference(gesture.value, event.target.value)}
+                            >
+                                {gestureActions.map((action) => (
+                                    <option key={action.value || "none"} value={action.value}>{action.label}</option>
+                                ))}
+                            </select>
+                        </label>
+                    ))}
                 </div>
             </section>}
 

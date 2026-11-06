@@ -1,11 +1,72 @@
-import { Outlet } from "react-router-dom";
+import { Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import Navbar from "./Navbar";
 import Sidebar from "./Sidebar";
+import { readGesturePreferences } from "../utils/settingsPreferences";
+import { useAuth } from "../hooks/useAuth";
 
 const Layout = ({ open, toggle, onClose, theme, toggleTheme }) => {
+    const navigate = useNavigate();
+    const { user } = useAuth();
     const [online, setOnline] = useState(() => navigator.onLine);
     const [apiUnavailable, setApiUnavailable] = useState(false);
+
+    useEffect(() => {
+        let gestures = readGesturePreferences(user?.id);
+        let tapCount = 0;
+        let tapTimer;
+        let pointerStart = null;
+        const runGesture = (gesture) => {
+            const destination = gestures[gesture];
+            if (destination && !(destination === "/messages" && user?.role !== "student")) {
+                navigate(destination);
+            }
+        };
+        const isInteractive = (target) => target instanceof Element &&
+            Boolean(target.closest("a, button, input, textarea, select, iframe, [contenteditable='true'], [role='button'], .sidebar, .floating-chat-window"));
+        const onPointerDown = (event) => {
+            if (window.innerWidth > 768 || event.pointerType !== "touch" || isInteractive(event.target)) {
+                pointerStart = null;
+                return;
+            }
+            pointerStart = { x: event.clientX, y: event.clientY };
+        };
+        const onPointerUp = (event) => {
+            if (window.innerWidth > 768 || event.pointerType !== "touch" || !pointerStart) return;
+            const deltaX = event.clientX - pointerStart.x;
+            const deltaY = event.clientY - pointerStart.y;
+            pointerStart = null;
+            if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) >= 55) {
+                window.clearTimeout(tapTimer);
+                tapCount = 0;
+                runGesture(Math.abs(deltaX) > Math.abs(deltaY)
+                    ? (deltaX < 0 ? "swipeLeft" : "swipeRight")
+                    : (deltaY < 0 ? "swipeUp" : "swipeDown"));
+                return;
+            }
+            tapCount += 1;
+            window.clearTimeout(tapTimer);
+            if (tapCount >= 3) {
+                tapCount = 0;
+                runGesture("tripleTap");
+                return;
+            }
+            tapTimer = window.setTimeout(() => {
+                if (tapCount === 2) runGesture("doubleTap");
+                tapCount = 0;
+            }, 360);
+        };
+        const refreshGestures = () => { gestures = readGesturePreferences(user?.id); };
+        window.addEventListener("smartcampus:gesture-preferences-updated", refreshGestures);
+        document.addEventListener("pointerdown", onPointerDown, { passive: true });
+        document.addEventListener("pointerup", onPointerUp, { passive: true });
+        return () => {
+            window.clearTimeout(tapTimer);
+            window.removeEventListener("smartcampus:gesture-preferences-updated", refreshGestures);
+            document.removeEventListener("pointerdown", onPointerDown);
+            document.removeEventListener("pointerup", onPointerUp);
+        };
+    }, [navigate, user?.id, user?.role]);
 
     useEffect(() => {
         const updateOnline = () => {

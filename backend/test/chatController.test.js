@@ -10,6 +10,7 @@ const { Op } = require("sequelize");
 const ChatProfile = require("../src/models/ChatProfile");
 const ChatProfilePermission = require("../src/models/ChatProfilePermission");
 const ChatMessage = require("../src/models/ChatMessage");
+const ChatMessageMedia = require("../src/models/ChatMessageMedia");
 const ChatMessageReaction = require("../src/models/ChatMessageReaction");
 const ChatHiddenMessage = require("../src/models/ChatHiddenMessage");
 const ChatReadState = require("../src/models/ChatReadState");
@@ -31,6 +32,7 @@ const originalMessageFindOne = ChatMessage.findOne;
 const originalMessageFindAll = ChatMessage.findAll;
 const originalMessageCreate = ChatMessage.create;
 const originalMessageFindByPk = ChatMessage.findByPk;
+const originalMessageMediaFindOne = ChatMessageMedia.findOne;
 const originalMessageUpdate = ChatMessage.update;
 const originalReactionFindOne = ChatMessageReaction.findOne;
 const originalReactionFindAll = ChatMessageReaction.findAll;
@@ -60,6 +62,7 @@ afterEach(() => {
     ChatMessage.findAll = originalMessageFindAll;
     ChatMessage.create = originalMessageCreate;
     ChatMessage.findByPk = originalMessageFindByPk;
+    ChatMessageMedia.findOne = originalMessageMediaFindOne;
     ChatMessage.update = originalMessageUpdate;
     ChatMessageReaction.findOne = originalReactionFindOne;
     ChatMessageReaction.findAll = originalReactionFindAll;
@@ -432,6 +435,53 @@ test("private messages can be sent to a non-coursemate", async () => {
 
     assert.equal(response.statusCode, 201);
     assert.equal(response.body.receiverProfileId, "other-profile");
+});
+
+test("PDF chat attachments are served inline with their PDF filename", async () => {
+    ChatProfile.findOne = async () => ({ id: "viewer-profile", userId: 7 });
+    ChatMessage.findByPk = async () => ({
+        id: "pdf-message",
+        courseId: null,
+        senderProfileId: "other-profile",
+        receiverProfileId: "viewer-profile",
+        type: "file",
+        content: "lecture notes.pdf"
+    });
+    ChatMessageMedia.findOne = async () => ({
+        contentType: "application/octet-stream",
+        data: Buffer.from("%PDF-test")
+    });
+    const response = {
+        headers: {},
+        statusCode: 200,
+        set(headers) {
+            Object.assign(this.headers, headers);
+            return this;
+        },
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(body) {
+            this.body = body;
+            return this;
+        },
+        send(body) {
+            this.body = body;
+            return this;
+        }
+    };
+
+    await chatController.getMessageMedia({
+        user: { id: 7 },
+        params: { id: "pdf-message" }
+    }, response, (error) => { throw error; });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["Content-Type"], "application/pdf");
+    assert.match(response.headers["Content-Disposition"], /^inline;/);
+    assert.match(response.headers["Content-Disposition"], /lecture%20notes\.pdf/);
+    assert.deepEqual(response.body, Buffer.from("%PDF-test"));
 });
 
 test("private chat participants can add a reaction to a message", async () => {

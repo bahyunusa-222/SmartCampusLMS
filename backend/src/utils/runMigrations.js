@@ -363,6 +363,9 @@ const applyAcademicCatalogMigration = async (queryInterface) => {
         },
         Courses: {
             schoolId: { type: DataTypes.INTEGER, allowNull: true }
+        },
+        ChatMessages: {
+            mediaGroupId: { type: DataTypes.UUID, allowNull: true }
         }
     })) {
         if (!hasTable(tables, tableName)) continue;

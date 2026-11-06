@@ -688,6 +688,11 @@ exports.sendMessage = async (req, res, next) => {
         let content = typeof req.body.content === "string" ? req.body.content.trim() : "";
         const type = messageTypes.has(req.body.type) ? req.body.type : "text";
         const replyTo = req.body.replyTo || null;
+        const mediaGroupId = typeof req.body.mediaGroupId === "string" ? req.body.mediaGroupId : null;
+        if (mediaGroupId && (type !== "image" ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(mediaGroupId))) {
+            return reject(400, "The image group is invalid.");
+        }
         if (type !== "voice" && type !== "image" && type !== "file" && (!content || content.length > 4000)) {
             return reject(400, "Message must contain 1–4000 characters.");
         }
@@ -807,6 +812,7 @@ exports.sendMessage = async (req, res, next) => {
                 senderProfileId: profile.id,
                 receiverProfileId,
                 content: type === "contact" ? JSON.stringify(req.contactCard) : content,
+                mediaGroupId,
                 type,
                 mentions,
                 replyTo
@@ -814,7 +820,7 @@ exports.sendMessage = async (req, res, next) => {
             if (["voice", "image", "file"].includes(type)) {
                 await ChatMessageMedia.create({
                     messageId: created.id,
-                    contentType: type === "file" ? "application/octet-stream" : req.file.mimetype,
+                    contentType: req.file.mimetype,
                     data: req.file.buffer
                 }, { transaction });
             }
@@ -1090,7 +1096,7 @@ exports.getMessageMedia = async (req, res, next) => {
         const profile = await profileFor(req.user.id);
         if (!profile) return profileMissing(res);
         const message = await ChatMessage.findByPk(req.params.id, {
-            attributes: ["id", "courseId", "senderProfileId", "receiverProfileId", "type"]
+            attributes: ["id", "courseId", "senderProfileId", "receiverProfileId", "type", "content"]
         });
         if (!message || !["voice", "image", "file"].includes(message.type)) {
             return res.status(404).json({ message: "Message attachment not found." });
@@ -1103,11 +1109,16 @@ exports.getMessageMedia = async (req, res, next) => {
             attributes: ["contentType", "data"]
         });
         if (!media) return res.status(404).json({ message: "Message attachment not found." });
-        const disposition = message.type === "file" ? "attachment" : "inline";
+        const isPdf = message.type === "file" && /\.pdf$/i.test(message.content || "");
+        const contentType = isPdf ? "application/pdf" : media.contentType;
+        const disposition = message.type === "file" && !isPdf ? "attachment" : "inline";
+        const fileName = String(message.content || "attachment")
+            .replace(/[\u0000-\u001f\u007f"\\]/g, "_")
+            .slice(0, 255);
         res.set({
-            "Content-Type": media.contentType,
+            "Content-Type": contentType,
             "Content-Length": String(media.data.length),
-            "Content-Disposition": `${disposition}; filename="attachment"`,
+            "Content-Disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff"
         });

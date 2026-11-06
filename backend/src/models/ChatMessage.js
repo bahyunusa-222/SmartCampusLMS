@@ -7,6 +7,7 @@ module.exports = sequelize.define("ChatMessage", {
     senderProfileId: { type: DataTypes.UUID, allowNull: false },
     receiverProfileId: { type: DataTypes.UUID, allowNull: true },
     content: { type: DataTypes.TEXT, allowNull: false },
+    mediaGroupId: { type: DataTypes.UUID, allowNull: true },
     type: {
         type: DataTypes.ENUM("text", "emoji", "gif", "sticker", "voice", "image", "file", "contact"),
         allowNull: false,

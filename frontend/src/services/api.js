@@ -47,7 +47,7 @@ const cacheKeyFor = (accountId, url, config) => {
 };
 
 API.get = (url, config = {}) => {
-    const { skipOfflineCache, ...networkConfig } = config;
+    const { skipOfflineCache, cacheForever, ...networkConfig } = config;
     if (skipOfflineCache) return requestNetworkGet(url, {
         ...networkConfig,
         timeout: networkConfig.timeout ?? 15000
@@ -62,7 +62,7 @@ API.get = (url, config = {}) => {
         timeout: networkConfig.timeout ?? 15000
     };
     const returnCachedResponse = (cachedEntry) => {
-        if (navigator.onLine && !isFreshOfflineResponse(cachedEntry) && !backgroundRefreshes.has(cacheKey)) {
+        if (!cacheForever && navigator.onLine && !isFreshOfflineResponse(cachedEntry) && !backgroundRefreshes.has(cacheKey)) {
             backgroundRefreshes.add(cacheKey);
             const refreshConfig = { ...cacheNetworkConfig };
             delete refreshConfig.signal;
