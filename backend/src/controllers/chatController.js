@@ -687,7 +687,25 @@ exports.sendMessage = async (req, res, next) => {
         const receiverProfileId = req.body.receiverProfileId || null;
         let content = typeof req.body.content === "string" ? req.body.content.trim() : "";
         const type = messageTypes.has(req.body.type) ? req.body.type : "text";
-        const replyTo = req.body.replyTo || null;
+        let replyTo = req.body.replyTo || null;
+        const clientMessageId = typeof req.body.clientMessageId === "string" ? req.body.clientMessageId : null;
+        if (clientMessageId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientMessageId)) {
+            return reject(400, "The message request ID is invalid.");
+        }
+        if (clientMessageId) {
+            const existingMessage = await ChatMessage.findOne({
+                where: { senderProfileId: profile.id, clientMessageId },
+                include: [
+                    { model: ChatProfile, as: "sender", attributes: profileFields },
+                    { model: ChatMessage, as: "reply", attributes: ["id", "content", "type"] },
+                    { model: ChatMessageReaction, as: "reactions", attributes: ["profileId", "emoji"] }
+                ]
+            });
+            if (existingMessage) {
+                await cleanupStagedUpload();
+                return res.status(200).json(serializeMessage(existingMessage, profile.id));
+            }
+        }
         const mediaGroupId = typeof req.body.mediaGroupId === "string" ? req.body.mediaGroupId : null;
         if (mediaGroupId && (type !== "image" ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(mediaGroupId))) {
@@ -792,14 +810,31 @@ exports.sendMessage = async (req, res, next) => {
         if (replyTo) {
             const reply = await ChatMessage.findOne({
                 where: courseId !== null
-                    ? { id: replyTo, courseId, receiverProfileId: null }
-                    : { id: replyTo, courseId: null, [Op.or]: [
-                        { senderProfileId: profile.id, receiverProfileId },
-                        { senderProfileId: receiverProfileId, receiverProfileId: profile.id }
-                    ] },
+                    ? {
+                        courseId,
+                        receiverProfileId: null,
+                        [Op.or]: [
+                            { id: replyTo },
+                            { senderProfileId: profile.id, clientMessageId: replyTo }
+                        ]
+                    }
+                    : {
+                        courseId: null,
+                        [Op.and]: [
+                            { [Op.or]: [
+                                { senderProfileId: profile.id, receiverProfileId },
+                                { senderProfileId: receiverProfileId, receiverProfileId: profile.id }
+                            ] },
+                            { [Op.or]: [
+                                { id: replyTo },
+                                { senderProfileId: profile.id, clientMessageId: replyTo }
+                            ] }
+                        ]
+                    },
                 attributes: ["id"]
             });
             if (!reply) return reject(400, "The message you are replying to is unavailable.");
+            replyTo = reply.id;
         }
 
         const validMentionNames = validMentionUserIds.map((member) => member.username);
@@ -813,6 +848,7 @@ exports.sendMessage = async (req, res, next) => {
                 receiverProfileId,
                 content: type === "contact" ? JSON.stringify(req.contactCard) : content,
                 mediaGroupId,
+                clientMessageId,
                 type,
                 mentions,
                 replyTo

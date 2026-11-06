@@ -437,6 +437,52 @@ test("private messages can be sent to a non-coursemate", async () => {
     assert.equal(response.body.receiverProfileId, "other-profile");
 });
 
+test("retries with a client message ID return the original message without creating a duplicate", async () => {
+    ChatProfile.findOne = async () => ({
+        id: "viewer-profile",
+        userId: 7,
+        username: "student_seven",
+        fullName: "Student Seven",
+        avatarUrl: null,
+        about: ""
+    });
+    const originalMessage = {
+        id: "message-1",
+        senderProfileId: "viewer-profile",
+        receiverProfileId: "other-profile",
+        content: "Hello",
+        type: "text",
+        reactions: []
+    };
+    ChatMessage.findOne = async (options) => {
+        assert.deepEqual(options.where, {
+            senderProfileId: "viewer-profile",
+            clientMessageId: "3f9f11b0-7ba1-4dcb-a3e3-c126ae13f0e2"
+        });
+        return originalMessage;
+    };
+    ChatMessage.create = async () => {
+        throw new Error("An idempotent retry must not create another message.");
+    };
+    const response = makeResponse();
+
+    await chatController.sendMessage(
+        {
+            user: { id: 7 },
+            body: {
+                receiverProfileId: "other-profile",
+                content: "Hello",
+                type: "text",
+                clientMessageId: "3f9f11b0-7ba1-4dcb-a3e3-c126ae13f0e2"
+            }
+        },
+        response
+    );
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.id, originalMessage.id);
+});
+
 test("PDF chat attachments are served inline with their PDF filename", async () => {
     ChatProfile.findOne = async () => ({ id: "viewer-profile", userId: 7 });
     ChatMessage.findByPk = async () => ({

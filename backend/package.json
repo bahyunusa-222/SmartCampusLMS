@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node scripts/seed.js",
+    "reset:data": "node scripts/resetProductionData.js",
     "migrate": "node scripts/migrate.js",
     "test": "node --test"
   },

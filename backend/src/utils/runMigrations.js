@@ -365,7 +365,8 @@ const applyAcademicCatalogMigration = async (queryInterface) => {
             schoolId: { type: DataTypes.INTEGER, allowNull: true }
         },
         ChatMessages: {
-            mediaGroupId: { type: DataTypes.UUID, allowNull: true }
+            mediaGroupId: { type: DataTypes.UUID, allowNull: true },
+            clientMessageId: { type: DataTypes.UUID, allowNull: true }
         }
     })) {
         if (!hasTable(tables, tableName)) continue;
@@ -374,6 +375,16 @@ const applyAcademicCatalogMigration = async (queryInterface) => {
             if (!Object.prototype.hasOwnProperty.call(existing, columnName)) {
                 await queryInterface.addColumn(tableName, columnName, definition);
             }
+        }
+    }
+
+    if (hasTable(tables, "ChatMessages")) {
+        const indexes = await queryInterface.showIndex("ChatMessages");
+        if (!indexes.some((index) => index.name === "chat_messages_sender_client_id_unique")) {
+            await queryInterface.addIndex("ChatMessages", ["senderProfileId", "clientMessageId"], {
+                unique: true,
+                name: "chat_messages_sender_client_id_unique"
+            });
         }
     }
 

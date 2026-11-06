@@ -8,7 +8,7 @@ import RouteBackButton from "../components/RouteBackButton";
 import { FaEye, FaPlus, FaSearch } from "react-icons/fa";
 import useOfflineRefresh from "../hooks/useOfflineRefresh";
 
-const Assignments = () => {
+const AssignmentsView = () => {
     const offlineRefresh = useOfflineRefresh();
     const { isStaff } = useAuth();
     const [searchParams] = useSearchParams();
@@ -106,7 +106,12 @@ const Assignments = () => {
                     }
                 }
             } catch (err) {
-                if (active) setLoadError(err.response?.data?.message || "Unable to load grading data.");
+                if (active) {
+                    setLoadError(err.response?.data?.message ||
+                        (!navigator.onLine || !err.response
+                            ? "You are offline. Reconnect to load your assignments."
+                            : `The server could not load assignments (HTTP ${err.response.status}).`));
+                }
             } finally {
                 if (active) setLoading(false);
             }
@@ -678,10 +683,11 @@ const Assignments = () => {
     /* ── STUDENT VIEW ── */
     return (
         <div className="page-content assignments-page">
-            {selectedCourse !== "all" && studentCourses.some((course) => String(course.id) === selectedCourse) && (
+            {initialCourseId && (
                 <RouteBackButton
                     className="course-context-back"
-                    label={`Back to ${studentCourses.find((course) => String(course.id) === selectedCourse)?.title}`}
+                    fallbackTo={`/courses/${encodeURIComponent(initialCourseId)}?section=materials`}
+                    label={`Back to ${studentCourses.find((course) => String(course.id) === initialCourseId)?.title || "course"}`}
                 />
             )}
             <header className="assignments-page-header">
@@ -690,7 +696,7 @@ const Assignments = () => {
                     <h1>Assignments</h1>
                     <p className="assignments-page-description">Track due dates, review feedback, and submit your course work.</p>
                 </div>
-                <button type="button" className="btn btn-inline assignments-submit-top-button" aria-label="Submit assignment" onClick={() => {
+                <button type="button" className="btn btn-inline assignments-submit-top-button" aria-label="Submit assignment" disabled={!data.length || !studentCourses.length} onClick={() => {
                     setSubmissionModalError("");
                     const nextCourseId = selectedCourse !== "all"
                         ? selectedCourse
@@ -729,12 +735,8 @@ const Assignments = () => {
             {loadError && <p className="materials-error" role="alert">{loadError}</p>}
             {msg && <p className={msg.type === "error" ? "materials-error" : "feature-status"} role={msg.type === "error" ? "alert" : "status"}>{msg.text}</p>}
 
-            {data.length === 0 ? (
-                <p style={{ color: "var(--theme-muted)" }}>
-                    No assignments yet. <Link to="/courses">Enroll in a course</Link> first.
-                </p>
-            ) : (
-                <>
+            <>
+                {studentCourses.length > 0 && (
                     <label className="materials-course-filter assignments-course-picker">
                         <span>Filter by course</span>
                         <select value={selectedCourse} onChange={(event) => setSelectedCourse(event.target.value)}>
@@ -742,7 +744,8 @@ const Assignments = () => {
                             {studentCourses.map((course) => <option key={course.id} value={course.id}>{course.title}</option>)}
                         </select>
                     </label>
-                    <nav className="assignment-status-tabs" role="tablist" aria-label="Assignment status">
+                )}
+                <nav className="assignment-status-tabs" role="tablist" aria-label="Assignment status">
                         {[
                             ["assigned", "Assigned"],
                             ["missing", "Missing"],
@@ -776,8 +779,8 @@ const Assignments = () => {
                                 {label}<span>{assignmentCategories[id].length}</span>
                             </button>
                         ))}
-                    </nav>
-                    {visibleAssignments.length ? (
+                </nav>
+                {visibleAssignments.length ? (
                         <div role="tabpanel" id={`assignments-panel-${activeAssignmentTab}`} aria-labelledby={`assignments-tab-${activeAssignmentTab}`}>
                             <div className="student-assignment-cards">
                                 {visibleAssignments.map((assignment) => {
@@ -903,15 +906,15 @@ const Assignments = () => {
                             </table>
                             </div>
                         </div>
-                    ) : <div className="materials-empty">
+                ) : <div className="materials-empty">
                         <h2>{activeAssignmentTab === "done"
                             ? "No completed assignments"
                             : activeAssignmentTab === "missing"
                                 ? "No missing assignments"
                                 : "No assigned work"}</h2>
+                        <p>Your assignment dashboard will show work shared with your courses here.</p>
                     </div>}
-                </>
-            )}
+            </>
             {submitModalOpen && (
                 <div className="course-modal-backdrop" onMouseDown={(event) => {
                     if (event.target === event.currentTarget) setSubmitModalOpen(false);
@@ -1026,6 +1029,12 @@ const Assignments = () => {
             />}
         </div>
     );
+};
+
+const Assignments = () => {
+    const [searchParams] = useSearchParams();
+    const courseContextId = searchParams.get("courseId") || "all";
+    return <AssignmentsView key={courseContextId} />;
 };
 
 export default Assignments;

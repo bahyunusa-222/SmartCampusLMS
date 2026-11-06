@@ -29,11 +29,6 @@
     scrollbar-width: thin;
 }
 
-.wa-emoji-popover .EmojiPickerReact {
-    width: 100% !important;
-    max-width: 100%;
-}
-
 :root[data-theme="light"] {
     color-scheme: light;
     --theme-bg: #f5f7fa;
@@ -15309,24 +15304,48 @@ p.course-manage-page-heading .course-created-date {
     background: #2a3942;
 }
 
-.wa-compose-emoji {
+.wa-compose-stickers {
     display: grid;
-    flex: 0 0 40px;
+    flex: 0 0 38px;
     place-items: center;
-    width: 40px;
-    height: 40px;
+    width: 38px;
+    height: 38px;
     border: 0;
     border-radius: 50%;
     background: transparent;
     color: #aebac1;
     cursor: pointer;
-    font-size: 1.15rem;
+    font-size: 1rem;
+    transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.wa-compose-stickers:hover,
+.wa-compose-stickers[aria-expanded="true"] {
+    background: rgba(var(--theme-accent-rgb), 0.16);
+    color: var(--theme-accent);
 }
 
 .wa-compose-message-field input {
     width: 100%;
     padding-left: 0;
     background: transparent;
+}
+
+.wa-pending-status {
+    color: var(--theme-accent);
+    font-size: 0.68rem;
+    font-weight: 650;
+}
+
+.join-class-submit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.join-class-submit svg {
+    flex: 0 0 auto;
 }
 
 .wa-image-group {
@@ -15441,6 +15460,32 @@ p.course-manage-page-heading .course-created-date {
 }
 
 @media (max-width: 768px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+    textarea,
+    select {
+        font-size: 16px !important;
+    }
+
+    .join-class-help {
+        display: none;
+    }
+
+    .join-class-submit {
+        width: 48px;
+        height: 48px;
+        padding: 0;
+        border-radius: 15px;
+    }
+
+    .join-class-submit span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+
     .sidebar-overlay {
         display: none !important;
     }
@@ -15631,4 +15676,17 @@ p.course-manage-page-heading .course-created-date {
 .materials-table td:last-child {
     text-align: center;
     white-space: nowrap;
+}
+
+.sidebar .nav-link.active,
+.wa-picker-tabs button.active,
+.assignment-status-tabs button[aria-selected="true"],
+.course-workspace-nav-tabs button.is-active,
+.catalog-filter.active {
+    border-color: rgba(var(--theme-accent-rgb), 0.62);
+    background: linear-gradient(135deg, rgba(var(--theme-accent-rgb), 0.24), rgba(var(--theme-accent-rgb), 0.08));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 5px 16px rgba(var(--theme-accent-rgb), 0.12);
+    color: var(--theme-accent);
+    backdrop-filter: blur(14px) saturate(145%);
+    -webkit-backdrop-filter: blur(14px) saturate(145%);
 }

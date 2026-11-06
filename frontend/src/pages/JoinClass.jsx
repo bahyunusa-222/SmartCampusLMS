@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { FaArrowRight } from "react-icons/fa";
 import API from "../services/api";
 import RouteBackButton from "../components/RouteBackButton";
 
@@ -39,7 +40,10 @@ const JoinClass = ({ invitationMode = false }) => {
                 navigate(`/courses/${response.data.course.id}?section=materials`, { replace: true });
             }, 900);
         } catch (joinError) {
-            setError(joinError.response?.data?.message || "Failed to join class.");
+            setError(joinError.response?.data?.message ||
+                (!navigator.onLine || !joinError.response
+                    ? "You are offline. Reconnect and try joining this class again."
+                    : `The server could not join this class (HTTP ${joinError.response.status}).`));
             setLoading(false);
         }
     }, [navigate]);
@@ -108,7 +112,7 @@ const JoinClass = ({ invitationMode = false }) => {
             <RouteBackButton className="course-manage-back" label="Back to courses" />
             <div className="form-box join-class-card">
                 <h2>{invitationCode ? "Joining your class" : "Join a Class"}</h2>
-                <p style={{ color: "var(--theme-muted)", marginBottom: 20, fontSize: "0.9rem" }}>
+                <p className="join-class-help" style={{ color: "var(--theme-muted)", marginBottom: 20, fontSize: "0.9rem" }}>
                     {invitationCode
                         ? "We’re adding this class to your dashboard."
                         : "Enter the 6-8 character code your lecturer gave you."}
@@ -131,8 +135,9 @@ const JoinClass = ({ invitationMode = false }) => {
                                 fontWeight: 700
                             }}
                         />
-                        <button className="btn" type="submit" disabled={loading || code.length < 6} style={{ marginTop: 12 }}>
-                            {loading ? "Joining..." : "Join Class"}
+                        <button className="btn join-class-submit" type="submit" disabled={loading || code.length < 6} aria-label={loading ? "Joining class" : "Join class"} style={{ marginTop: 12 }}>
+                            <span>{loading ? "Joining..." : "Join Class"}</span>
+                            <FaArrowRight aria-hidden="true" />
                         </button>
                     </form>
                 )}
@@ -147,8 +152,9 @@ const JoinClass = ({ invitationMode = false }) => {
                             maxLength={8}
                             required
                         />
-                        <button className="btn" type="submit" disabled={loading || code.length < 6} style={{ marginTop: 12 }}>
-                            {loading ? "Joining..." : "Try code again"}
+                        <button className="btn join-class-submit" type="submit" disabled={loading || code.length < 6} aria-label={loading ? "Joining class" : "Try code again"} style={{ marginTop: 12 }}>
+                            <span>{loading ? "Joining..." : "Try code again"}</span>
+                            <FaArrowRight aria-hidden="true" />
                         </button>
                     </form>
                 )}

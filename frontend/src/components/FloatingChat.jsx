@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import EmojiPicker from "emoji-picker-react";
 import {
     FaArrowLeft,
     FaBookmark,
@@ -20,6 +19,7 @@ import {
     FaSearch,
     FaShare,
     FaStop,
+    FaStickyNote,
     FaTimes,
     FaTrash,
     FaAddressCard,
@@ -29,6 +29,11 @@ import {
 import API from "../services/api";
 import { appendUploadedFile } from "../services/fileUploads";
 import { getUser } from "../hooks/useAuth";
+import {
+    enqueueOfflineChatMessage,
+    readOfflineChatMessages,
+    removeOfflineChatMessage
+} from "../services/offlineCache";
 
 const formatTime = (date) => new Date(date).toLocaleTimeString([], {
     hour: "2-digit",
@@ -50,6 +55,34 @@ const messagePreview = (message) => {
     return message.content;
 };
 
+const isNetworkFailure = (error) => !error?.response;
+
+const requestErrorMessage = (error, fallback) => {
+    if (error?.response?.data?.message) return error.response.data.message;
+    if (isNetworkFailure(error)) return "You are offline. The message has been saved on this device and will send when you reconnect.";
+    return fallback;
+};
+
+const serviceErrorMessage = (error, fallback) => {
+    if (error?.response?.data?.message) return error.response.data.message;
+    if (!navigator.onLine) return "You are offline. Reconnect and try again.";
+    if (!error?.response) return "The network request failed. Check your connection and try again.";
+    if (error.response.status >= 500) return `The server could not complete this request (HTTP ${error.response.status}).`;
+    return fallback;
+};
+
+const pendingChatMessage = (item, profile) => ({
+    ...item.payload,
+    id: item.id,
+    clientMessageId: item.id,
+    senderProfileId: profile.id,
+    sender: profile,
+    createdAt: new Date(item.queuedAt).toISOString(),
+    reactions: [],
+    pending: true,
+    mediaGroupId: item.mediaGroupId || null
+});
+
 const parseContactCard = (content) => {
     try {
         return JSON.parse(content);
@@ -63,19 +96,6 @@ const readFavoriteChatKeys = (userId) => {
     try {
         const stored = JSON.parse(localStorage.getItem(`smartcampus:chat-favorites:${userId}`) || "[]");
         return Array.isArray(stored) ? stored.filter((key) => typeof key === "string") : [];
-    } catch {
-        return [];
-    }
-};
-
-const readSavedChatMedia = (userId) => {
-    if (userId == null) return [];
-    try {
-        const stored = JSON.parse(localStorage.getItem(`smartcampus:chat-media:${userId}`) || "[]");
-        return Array.isArray(stored)
-            ? stored.filter((item) => item && ["gif", "sticker"].includes(item.type) &&
-                typeof item.url === "string" && typeof item.previewUrl === "string")
-            : [];
     } catch {
         return [];
     }
@@ -139,11 +159,9 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     const [draft, setDraft] = useState("");
     const [sending, setSending] = useState(false);
     const [error, setError] = useState("");
-    const [showEmoji, setShowEmoji] = useState(false);
+    const [showMediaPicker, setShowMediaPicker] = useState(false);
     const [showAttachments, setShowAttachments] = useState(false);
     const [mediaType, setMediaType] = useState("gif");
-    const [mediaTab, setMediaTab] = useState("emoji");
-    const [savedMedia, setSavedMedia] = useState(() => readSavedChatMedia(getUser()?.id));
     const [replyTo, setReplyTo] = useState(null);
     const [contextMessage, setContextMessage] = useState(null);
     const [mentionChoices, setMentionChoices] = useState([]);
@@ -175,6 +193,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     const voiceSourcesRef = useRef({});
     const lastTouchRef = useRef({ messageId: null, at: 0 });
     const supabaseRealtimeActiveRef = useRef(false);
+    const flushingOutboxRef = useRef(false);
     const privateChatProfileId = activeChat?.type === "private" ? activeChat.id : null;
     const privateChatKey = activeChat?.type === "private" ? activeChat.key : null;
 
@@ -202,7 +221,6 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             setPrivateChats([]);
             setChatFolder("all");
             setFavoriteChatKeys(readFavoriteChatKeys(getUser()?.id));
-            setSavedMedia(readSavedChatMedia(getUser()?.id));
             setFavoriteStorageError("");
             setActiveChat(null);
             setMessages([]);
@@ -266,7 +284,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                 if (!response.data.profile) setUsername("");
             })
             .catch((requestError) => {
-                if (mounted) setError(requestError.response?.data?.message || "Unable to load chats.");
+                if (mounted) setError(serviceErrorMessage(requestError, "Unable to load chats."));
             })
             .finally(() => {
                 if (mounted) setChatLoaded(true);
@@ -283,7 +301,19 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                 : `/chat/private/${chat.id}/messages`;
             const response = await API.get(url);
             if (currentChatRef.current?.key !== chat.key) return;
-            setMessages(response.data || []);
+            const queued = await readOfflineChatMessages(String(user?.id));
+            const pendingMessages = queued
+                .filter((item) => item.chatKey === chat.key)
+                .map((item) => pendingChatMessage(item, profile));
+            pendingMessages.forEach((message) => {
+                const queuedItem = queued.find((item) => item.id === message.id);
+                if (queuedItem?.files?.[0] && !voiceSourcesRef.current[message.id]) {
+                    const source = URL.createObjectURL(queuedItem.files[0]);
+                    voiceSourcesRef.current[message.id] = source;
+                    setMediaSources((current) => ({ ...current, [message.id]: source }));
+                }
+            });
+            setMessages([...(response.data || []), ...pendingMessages]);
             if (!newMessagesDividerRef.current) {
                 const firstUnread = response.data.find((message) =>
                     message.senderProfileId !== ownProfileId &&
@@ -296,15 +326,113 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             }
             if (!quiet) setError("");
         } catch (requestError) {
-            if (!quiet) setError(requestError.response?.data?.message || "Unable to load this conversation.");
+            if (!quiet) setError(serviceErrorMessage(requestError, "Unable to load this conversation."));
         }
-    }, [ownProfileId]);
+    }, [ownProfileId, profile, user]);
+
+    const queueChatMessage = async (payload, { files = [], mediaGroupId = null, chat = activeChat } = {}) => {
+        if (user?.id == null || !profile || !chat) {
+            throw new Error("Sign in and create a chat profile before sending messages.");
+        }
+        const clientMessageId = payload.clientMessageId || crypto.randomUUID();
+        const queued = {
+            id: clientMessageId,
+            chatKey: chat.key,
+            payload: { ...payload, clientMessageId },
+            files,
+            mediaGroupId
+        };
+        const storedMessage = await enqueueOfflineChatMessage(String(user.id), queued);
+        const pending = pendingChatMessage(storedMessage, profile);
+        if (currentChatRef.current?.key === chat.key) {
+            setMessages((current) => [...current.filter((message) => message.id !== pending.id), pending]);
+        }
+        if (files.length) {
+            const source = URL.createObjectURL(files[0]);
+            voiceSourcesRef.current[pending.id] = source;
+            setMediaSources((current) => ({ ...current, [pending.id]: source }));
+        }
+        setError("Saved on this device; will send automatically when you reconnect.");
+        return queued;
+    };
+
+    const flushChatOutbox = useCallback(async () => {
+        if (!navigator.onLine || user?.id == null || !profile || flushingOutboxRef.current) return;
+        flushingOutboxRef.current = true;
+        let deliveredAny = false;
+        try {
+            const queuedMessages = await readOfflineChatMessages(String(user.id));
+            for (const queued of queuedMessages) {
+                if (!navigator.onLine) break;
+                try {
+                    let response;
+                    if (queued.files?.length) {
+                        const formData = new FormData();
+                        for (const [key, value] of Object.entries(queued.payload)) {
+                            if (value != null) formData.append(key, String(value));
+                        }
+                        await appendUploadedFile(formData, queued.files[0], {
+                            purpose: "chat-media",
+                            mediaType: queued.payload.type
+                        });
+                        response = await API.post("/chat/messages", formData, {
+                            headers: { "Content-Type": "multipart/form-data" }
+                        });
+                    } else {
+                        response = await API.post("/chat/messages", queued.payload);
+                    }
+                    await removeOfflineChatMessage(queued.id);
+                    deliveredAny = true;
+                    const chat = currentChatRef.current;
+                    if (chat?.key === queued.chatKey) {
+                        setMessages((current) => [
+                            ...current.filter((message) => message.id !== queued.id && message.id !== response.data.id),
+                            response.data
+                        ]);
+                    }
+                } catch (requestError) {
+                    if (isNetworkFailure(requestError) || requestError.response?.status >= 500) {
+                        setError(requestError.response?.data?.message ||
+                            "Messages are still queued and will retry when the connection is available.");
+                        break;
+                    }
+                    await removeOfflineChatMessage(queued.id);
+                    const chat = currentChatRef.current;
+                    if (chat?.key === queued.chatKey) {
+                        setMessages((current) => current.filter((message) => message.id !== queued.id));
+                    }
+                    setError(requestErrorMessage(requestError, "The queued message was rejected by the server."));
+                }
+            }
+            if (deliveredAny) {
+                refresh().catch((requestError) => {
+                    setError(requestErrorMessage(requestError, "Messages sent, but the chat list could not refresh."));
+                });
+            }
+        } catch (requestError) {
+            setError(requestError.message || "Could not read the messages waiting to be sent.");
+        } finally {
+            flushingOutboxRef.current = false;
+        }
+    }, [profile, refresh, user]);
+
+    useEffect(() => {
+        if (!profile || user?.id == null) return undefined;
+        const retry = () => { flushChatOutbox(); };
+        window.addEventListener("online", retry);
+        const timer = window.setInterval(retry, 15000);
+        retry();
+        return () => {
+            window.removeEventListener("online", retry);
+            window.clearInterval(timer);
+        };
+    }, [flushChatOutbox, profile, user?.id]);
 
     useEffect(() => {
         if (!open || !activeChat || !profile) return undefined;
         const timer = window.setTimeout(() => {
             loadMessages(activeChat).then(() => refresh()).catch((requestError) => {
-                setError(requestError.response?.data?.message || "Unable to load this conversation.");
+                setError(serviceErrorMessage(requestError, "Unable to load this conversation."));
             });
         }, 0);
         return () => window.clearTimeout(timer);
@@ -327,7 +455,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             .catch((requestError) => {
                 if (!cancelled) {
                     setPrivateContactApproval({ profileId: activeChat.id, approved: false });
-                    setError(requestError.response?.data?.message || "Unable to load contact privacy approval.");
+                    setError(serviceErrorMessage(requestError, "Unable to load contact privacy approval."));
                 }
             });
         return () => {
@@ -346,7 +474,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     : current);
             })
             .catch((requestError) => {
-                if (mounted) setError(requestError.response?.data?.message || "Unable to load this chat profile.");
+                if (mounted) setError(serviceErrorMessage(requestError, "Unable to load this chat profile."));
             });
         return () => { mounted = false; };
     }, [privateChatKey, privateChatProfileId]);
@@ -400,11 +528,11 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                         (data.senderProfileId === chat.id || data.receiverProfileId === chat.id);
                                 if (belongsToActive) {
                                     loadMessages(chat, true).then(() => refresh()).catch((requestError) => {
-                                        setError(requestError.response?.data?.message || "Unable to update chat status.");
+                                        setError(serviceErrorMessage(requestError, "Unable to update chat status."));
                                     });
                                 }
                                 else refresh().catch((requestError) => {
-                                    setError(requestError.response?.data?.message || "Unable to update unread messages.");
+                                    setError(serviceErrorMessage(requestError, "Unable to update unread messages."));
                                 });
                             } else if (event === "typing") {
                                 const chat = currentChatRef.current;
@@ -438,12 +566,12 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                             } else if (event === "reaction") {
                                 const chat = currentChatRef.current;
                                 if (chat) loadMessages(chat, true).catch((requestError) => {
-                                    setError(requestError.response?.data?.message || "Unable to update message reactions.");
+                                    setError(serviceErrorMessage(requestError, "Unable to update message reactions."));
                                 });
                             } else if (event === "mention") {
                                 setError("You were mentioned in a course chat.");
                                 refresh().catch((requestError) => {
-                                    setError(requestError.response?.data?.message || "Unable to refresh your chats.");
+                                    setError(serviceErrorMessage(requestError, "Unable to refresh your chats."));
                                 });
                             }
                         }
@@ -503,11 +631,11 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                 (message.senderProfileId === chat.id || message.receiverProfileId === chat.id);
                         if (belongsToActive) {
                             loadMessages(chat, true).then(() => refresh()).catch((requestError) => {
-                                setError(requestError.response?.data?.message || "Unable to update chat status.");
+                                setError(serviceErrorMessage(requestError, "Unable to update chat status."));
                             });
                         } else {
                             refresh().catch((requestError) => {
-                                setError(requestError.response?.data?.message || "Unable to update unread messages.");
+                                setError(serviceErrorMessage(requestError, "Unable to update unread messages."));
                             });
                         }
                     })
@@ -538,7 +666,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     } catch (requestError) {
                         supabaseRealtimeActiveRef.current = false;
                         setRealtimeMode("server");
-                        setError(requestError.response?.data?.message || "Unable to refresh the live chat connection.");
+                        setError(serviceErrorMessage(requestError, "Unable to refresh the live chat connection."));
                     }
                 }, 8 * 60 * 1000);
             } catch (requestError) {
@@ -564,7 +692,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                 if (mounted) setSavedMessages(response.data || []);
             })
             .catch((requestError) => {
-                if (mounted) setError(requestError.response?.data?.message || "Unable to load saved messages.");
+                if (mounted) setError(serviceErrorMessage(requestError, "Unable to load saved messages."));
             });
         return () => { mounted = false; };
     }, [open, profile]);
@@ -573,7 +701,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         let cancelled = false;
         const loadMessageMedia = async () => {
             const mediaMessages = messages.filter((message) =>
-                ["voice", "image", "file"].includes(message.type) && !voiceSourcesRef.current[message.id]
+                !message.pending && ["voice", "image", "file"].includes(message.type) && !voiceSourcesRef.current[message.id]
             );
             await Promise.all(mediaMessages.map(async (message) => {
                 try {
@@ -592,7 +720,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     voiceSourcesRef.current[message.id] = objectUrl;
                     setMediaSources((current) => ({ ...current, [message.id]: objectUrl }));
                 } catch (requestError) {
-                    if (!cancelled) setError(requestError.response?.data?.message || "Unable to load a message attachment.");
+                    if (!cancelled) setError(serviceErrorMessage(requestError, "Unable to load a message attachment."));
                 }
             }));
         };
@@ -621,7 +749,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         if (!open || !profile || activeChat) return undefined;
         const interval = window.setInterval(() => {
             refresh().catch((requestError) => {
-                setError(requestError.response?.data?.message || "Unable to refresh chat list.");
+                setError(serviceErrorMessage(requestError, "Unable to refresh chat list."));
             });
         }, 12000);
         return () => window.clearInterval(interval);
@@ -716,7 +844,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         setDraft("");
         setReplyTo(null);
         setContextMessage(null);
-        setShowEmoji(false);
+        setShowMediaPicker(false);
         setShowAttachments(false);
         setTypingUsers([]);
         window.clearTimeout(typingTimersRef.current.expire);
@@ -736,13 +864,15 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         const content = `${shareAnnouncement.title}\n${body}\n\n${shareAnnouncement.courseTitle} announcement\n${announcementUrl}`;
         setSending(true);
         setShareError("");
+        const payload = {
+            courseId: target.type === "course" ? Number(target.id) : null,
+            receiverProfileId: target.type === "private" ? target.id : null,
+            content,
+            type: "text",
+            clientMessageId: crypto.randomUUID()
+        };
         try {
-            const response = await API.post("/chat/messages", {
-                courseId: target.type === "course" ? Number(target.id) : null,
-                receiverProfileId: target.type === "private" ? target.id : null,
-                content,
-                type: "text"
-            });
+            const response = await API.post("/chat/messages", payload);
             setShareAnnouncement(null);
             openConversation(target);
             setMessages([response.data]);
@@ -750,7 +880,18 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                 setError(requestError.response?.data?.message || "Announcement shared, but the chat list could not refresh.");
             });
         } catch (requestError) {
-            setShareError(requestError.response?.data?.message || "Unable to share this announcement.");
+            if (isNetworkFailure(requestError)) {
+                try {
+                    await queueChatMessage(payload, { chat: target });
+                    setShareAnnouncement(null);
+                    openConversation(target);
+                    setShareError("Saved on this device; will share automatically when you reconnect.");
+                } catch (queueError) {
+                    setShareError(queueError.message || "Unable to save this announcement for delivery.");
+                }
+            } else {
+                setShareError(serviceErrorMessage(requestError, "Unable to share this announcement."));
+            }
         } finally {
             setSending(false);
         }
@@ -873,7 +1014,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             setCoursemates(response.data.profiles || []);
             return response.data.profiles || [];
         } catch (requestError) {
-            setError(requestError.response?.data?.message || "Unable to load your coursemates.");
+            setError(serviceErrorMessage(requestError, "Unable to load your coursemates."));
             return [];
         } finally {
             setCoursematesLoading(false);
@@ -906,7 +1047,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                 matNumberVisibility: "private_contacts"
             });
         } catch (requestError) {
-            setError(requestError.response?.data?.message || "Unable to load your profile settings.");
+            setError(serviceErrorMessage(requestError, "Unable to load your profile settings."));
         } finally {
             setProfileSettingsLoading(false);
         }
@@ -956,30 +1097,62 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         setShowAttachments(false);
         let sentCount = 0;
         try {
-            for (const file of attachments) {
+            for (const [index, file] of attachments.entries()) {
+                const payload = {
+                    courseId: activeChat.type === "course" ? Number(activeChat.id) : null,
+                    receiverProfileId: activeChat.type === "private" ? activeChat.id : null,
+                    type,
+                    content: file.name,
+                    ...(mediaGroupId ? { mediaGroupId } : {}),
+                    ...(replyTo ? { replyTo: replyTo.id } : {})
+                };
+                if (!navigator.onLine) {
+                    for (const queuedFile of attachments.slice(index)) {
+                        await queueChatMessage({
+                            ...payload,
+                            clientMessageId: crypto.randomUUID(),
+                            content: queuedFile.name
+                        }, { files: [queuedFile], mediaGroupId });
+                    }
+                    return;
+                }
                 const formData = new FormData();
-                if (activeChat.type === "course") formData.append("courseId", String(activeChat.id));
-                else formData.append("receiverProfileId", activeChat.id);
-                formData.append("type", type);
-                formData.append("content", file.name);
-                if (mediaGroupId) formData.append("mediaGroupId", mediaGroupId);
-                if (replyTo) formData.append("replyTo", replyTo.id);
-                await appendUploadedFile(formData, file, {
-                    purpose: "chat-media",
-                    mediaType: type
+                const clientMessageId = crypto.randomUUID();
+                Object.entries({ ...payload, clientMessageId }).forEach(([key, value]) => {
+                    if (value != null) formData.append(key, String(value));
                 });
-                const response = await API.post("/chat/messages", formData, {
-                    headers: { "Content-Type": "multipart/form-data" }
-                });
-                sentCount += 1;
-                setMessages((current) => [...current.filter((item) => item.id !== response.data.id), response.data]);
+                try {
+                    await appendUploadedFile(formData, file, {
+                        purpose: "chat-media",
+                        mediaType: type
+                    });
+                    const response = await API.post("/chat/messages", formData, {
+                        headers: { "Content-Type": "multipart/form-data" }
+                    });
+                    sentCount += 1;
+                    setMessages((current) => [...current.filter((item) => item.id !== response.data.id), response.data]);
+                } catch (requestError) {
+                    if (!isNetworkFailure(requestError)) throw requestError;
+                    await queueChatMessage({
+                        ...payload,
+                        clientMessageId
+                    }, { files: [file], mediaGroupId });
+                    for (const queuedFile of attachments.slice(index + 1)) {
+                        await queueChatMessage({
+                            ...payload,
+                            clientMessageId: crypto.randomUUID(),
+                            content: queuedFile.name
+                        }, { files: [queuedFile], mediaGroupId });
+                    }
+                    return;
+                }
             }
             setReplyTo(null);
             refresh().catch((requestError) => {
                 setError(requestError.response?.data?.message || "Attachment sent, but the chat list could not refresh.");
             });
         } catch (requestError) {
-            const reason = requestError.response?.data?.message || requestError.message || "Unable to send this attachment.";
+            const reason = requestErrorMessage(requestError, "Unable to send this attachment.");
             setError(sentCount
                 ? `${sentCount} of ${attachments.length} files sent. ${reason}`
                 : reason);
@@ -993,21 +1166,32 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         setSending(true);
         setError("");
         setShowAttachments(false);
+        const payload = {
+            courseId: activeChat.type === "course" ? Number(activeChat.id) : null,
+            receiverProfileId: activeChat.type === "private" ? activeChat.id : null,
+            content: JSON.stringify({ profileId: contact.id }),
+            type: "contact",
+            replyTo: replyTo?.id || null,
+            clientMessageId: crypto.randomUUID()
+        };
         try {
-            const response = await API.post("/chat/messages", {
-                courseId: activeChat.type === "course" ? Number(activeChat.id) : null,
-                receiverProfileId: activeChat.type === "private" ? activeChat.id : null,
-                content: JSON.stringify({ profileId: contact.id }),
-                type: "contact",
-                replyTo: replyTo?.id || null
-            });
+            const response = await API.post("/chat/messages", payload);
             setMessages((current) => [...current, response.data]);
             setReplyTo(null);
             refresh().catch((requestError) => {
                 setError(requestError.response?.data?.message || "Contact sent, but the chat list could not refresh.");
             });
         } catch (requestError) {
-            setError(requestError.response?.data?.message || "Unable to send this contact.");
+            if (isNetworkFailure(requestError)) {
+                try {
+                    await queueChatMessage(payload);
+                    setReplyTo(null);
+                } catch (queueError) {
+                    setError(queueError.message || "Unable to save this contact for delivery.");
+                }
+            } else {
+                setError(requestErrorMessage(requestError, "Unable to send this contact."));
+            }
         } finally {
             setSending(false);
         }
@@ -1020,25 +1204,39 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         const type = media?.type || "text";
         setSending(true);
         setError("");
+        const payload = {
+            courseId: activeChat.type === "course" ? Number(activeChat.id) : null,
+            receiverProfileId: activeChat.type === "private" ? activeChat.id : null,
+            content,
+            type,
+            replyTo: replyTo?.id || null,
+            clientMessageId: crypto.randomUUID()
+        };
         try {
-            const response = await API.post("/chat/messages", {
-                courseId: activeChat.type === "course" ? Number(activeChat.id) : null,
-                receiverProfileId: activeChat.type === "private" ? activeChat.id : null,
-                content,
-                type,
-                replyTo: replyTo?.id || null
-            });
+            const response = await API.post("/chat/messages", payload);
             setMessages((current) => [...current.filter((item) => item.id !== response.data.id), response.data]);
             setDraft("");
             setReplyTo(null);
-            setShowEmoji(false);
+            setShowMediaPicker(false);
             setMediaResults([]);
             setMentionChoices([]);
             refresh().catch((requestError) => {
                 setError(requestError.response?.data?.message || "Message sent, but the chat list could not refresh.");
             });
         } catch (requestError) {
-            setError(requestError.response?.data?.message || "Unable to send message.");
+            if (isNetworkFailure(requestError)) {
+                try {
+                    await queueChatMessage(payload);
+                    if (!media) setDraft("");
+                    setReplyTo(null);
+                    setMediaResults([]);
+                    setMentionChoices([]);
+                } catch (queueError) {
+                    setError(queueError.message || "Unable to save this message for delivery.");
+                }
+            } else {
+                setError(requestErrorMessage(requestError, "Unable to send message."));
+            }
         } finally {
             setSending(false);
         }
@@ -1086,20 +1284,6 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         }
     };
 
-    const toggleMediaSaved = (item, type = mediaType) => {
-        const key = `${type}:${item.id}`;
-        const exists = savedMedia.some((saved) => saved.key === key);
-        const next = exists
-            ? savedMedia.filter((saved) => saved.key !== key)
-            : [...savedMedia, { key, id: item.id, type, url: item.url, previewUrl: item.previewUrl }];
-        try {
-            localStorage.setItem(`smartcampus:chat-media:${user.id}`, JSON.stringify(next));
-            setSavedMedia(next);
-        } catch {
-            setError("Unable to save this GIF or sticker on this device.");
-        }
-    };
-
     const toggleReaction = async (message, emoji) => {
         try {
             const response = await API.post(`/chat/messages/${message.id}/reactions`, { emoji });
@@ -1143,7 +1327,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             });
             setMediaResults(response.data.results || []);
         } catch (requestError) {
-            setError(requestError.response?.data?.message || "Unable to search GIFs.");
+            setError(serviceErrorMessage(requestError, "Unable to search GIFs."));
         } finally {
             setMediaSearching(false);
         }
@@ -1156,6 +1340,16 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         formData.append("type", "voice");
         formData.append("content", "Voice note");
         if (replyTo) formData.append("replyTo", replyTo.id);
+        const clientMessageId = crypto.randomUUID();
+        formData.append("clientMessageId", clientMessageId);
+        const payload = {
+            courseId: activeChat.type === "course" ? Number(activeChat.id) : null,
+            receiverProfileId: activeChat.type === "private" ? activeChat.id : null,
+            type: "voice",
+            content: "Voice note",
+            replyTo: replyTo?.id || null,
+            clientMessageId
+        };
         let voiceExtension = "webm";
         if (blob.type.includes("mp4")) voiceExtension = "mp4";
         else if (blob.type.includes("ogg")) voiceExtension = "ogg";
@@ -1176,7 +1370,16 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                 setError(requestError.response?.data?.message || "Voice note sent, but the chat list could not refresh.");
             });
         } catch (requestError) {
-            setError(requestError.response?.data?.message || requestError.message || "Unable to send voice note.");
+            if (isNetworkFailure(requestError)) {
+                try {
+                    await queueChatMessage(payload, { files: [voiceFile] });
+                    setReplyTo(null);
+                } catch (queueError) {
+                    setError(queueError.message || "Unable to save the voice note for delivery.");
+                }
+            } else {
+                setError(requestErrorMessage(requestError, "Unable to send voice note."));
+            }
         } finally {
             setSending(false);
         }
@@ -2118,7 +2321,9 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                             : <span className="wa-voice-loading">Image is not saved on this device yet.</span>}
                                                         <div className="wa-message-meta">
                                                             <time>{formatTime(message.createdAt)}</time>
-                                                            {entry.own && message.receiverProfileId && message.deliveredAt
+                                                            {message.pending
+                                                                ? <span className="wa-pending-status">Queued</span>
+                                                                : entry.own && message.receiverProfileId && message.deliveredAt
                                                                 ? <FaCheckDouble className={message.isRead ? "wa-read-tick" : "wa-delivered-tick"} aria-label={message.isRead ? "Seen" : "Delivered"} />
                                                                 : entry.own && <FaCheck aria-label="Sent" />}
                                                         </div>
@@ -2238,7 +2443,9 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                             )}
                                             <div className="wa-message-meta">
                                                 <time>{formatTime(message.createdAt)}</time>
-                                                {own && message.receiverProfileId && message.deliveredAt
+                                                {message.pending
+                                                    ? <span className="wa-pending-status">Queued</span>
+                                                    : own && message.receiverProfileId && message.deliveredAt
                                                     ? <FaCheckDouble className={message.isRead ? "wa-read-tick" : "wa-delivered-tick"} aria-label={message.isRead ? "Seen" : "Delivered"} />
                                                     : own && <FaCheck aria-label="Sent" />}
                                             </div>
@@ -2292,93 +2499,48 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     <button type="button" aria-label="Cancel reply" onClick={() => setReplyTo(null)}><FaTimes /></button>
                                 </div>
                             )}
-                            {showEmoji && (
+                            {showMediaPicker && (
                                 <div className="wa-emoji-popover">
-                                    <nav className="wa-picker-tabs" aria-label="Message picker">
+                                    <nav className="wa-picker-tabs" aria-label="GIF and sticker picker">
                                         {[
-                                            ["emoji", "Emoji"],
                                             ["gif", "GIFs"],
-                                            ["sticker", "Stickers"],
-                                            ["saved", "Saved"]
+                                            ["sticker", "Stickers"]
                                         ].map(([tab, label]) => (
                                             <button
                                                 type="button"
                                                 key={tab}
-                                                className={mediaTab === tab ? "active" : ""}
-                                                aria-pressed={mediaTab === tab}
+                                                className={mediaType === tab ? "active" : ""}
+                                                aria-pressed={mediaType === tab}
                                                 onClick={() => {
-                                                    setMediaTab(tab);
-                                                    if (tab === "gif" || tab === "sticker") {
-                                                        setMediaType(tab);
-                                                        setMediaResults([]);
-                                                    }
+                                                    setMediaType(tab);
+                                                    setMediaResults([]);
                                                 }}
                                             >{label}</button>
                                         ))}
                                     </nav>
-                                    {mediaTab === "emoji" ? (
-                                        <EmojiPicker
-                                            onEmojiClick={(item) => sendMessage(null, { content: item.emoji, type: "emoji" })}
-                                            theme={document.documentElement.dataset.theme === "dark" ? "dark" : "light"}
-                                            height={300}
-                                            width="100%"
+                                    <form className="wa-media-search" onSubmit={searchMedia}>
+                                        <input
+                                            value={mediaQuery}
+                                            onChange={(event) => setMediaQuery(event.target.value)}
+                                            placeholder={`Search ${mediaType === "gif" ? "GIFs" : "stickers"}`}
+                                            aria-label={`Search ${mediaType === "gif" ? "GIFs" : "stickers"}`}
                                         />
-                                    ) : mediaTab === "saved" ? (
-                                        <div className="wa-media-results">
-                                            {savedMedia.map((item) => (
-                                                <div className="wa-media-choice" key={item.key}>
-                                                    <button
-                                                        type="button"
-                                                        aria-label={`Send saved ${item.type}`}
-                                                        onClick={() => sendMessage(null, { content: item.url, type: item.type })}
-                                                    ><img src={item.previewUrl} alt="" loading="lazy" /></button>
-                                                    <button
-                                                        type="button"
-                                                        className="wa-media-save"
-                                                        aria-label={`Remove saved ${item.type}`}
-                                                        onClick={() => toggleMediaSaved(item, item.type)}
-                                                    ><FaBookmark aria-hidden="true" /></button>
-                                                </div>
-                                            ))}
-                                            {!savedMedia.length && <span>Save GIFs and stickers here for quick access.</span>}
-                                        </div>
-                                    ) : (
-                                        <>
-                                            <form className="wa-media-search" onSubmit={searchMedia}>
-                                                <input
-                                                    value={mediaQuery}
-                                                    onChange={(event) => setMediaQuery(event.target.value)}
-                                                    placeholder={`Search ${mediaTab === "gif" ? "GIFs" : "stickers"}`}
-                                                    aria-label={`Search ${mediaTab === "gif" ? "GIFs" : "stickers"}`}
-                                                />
-                                                <button className="chat-primary-button" type="submit" disabled={mediaSearching || mediaQuery.trim().length < 2}>
-                                                    {mediaSearching ? "Searching…" : "Search"}
-                                                </button>
-                                            </form>
-                                            <div className="wa-media-results">
-                                                {mediaResults.map((item) => {
-                                                    const saved = savedMedia.some((media) => media.key === `${mediaType}:${item.id}`);
-                                                    return (
-                                                        <div className="wa-media-choice" key={item.id}>
-                                                            <button
-                                                                type="button"
-                                                                aria-label={`Send ${mediaType}`}
-                                                                onClick={() => sendMessage(null, { content: item.url, type: mediaType })}
-                                                            ><img src={item.previewUrl} alt="" loading="lazy" /></button>
-                                                            <button
-                                                                type="button"
-                                                                className={`wa-media-save${saved ? " is-saved" : ""}`}
-                                                                aria-label={saved ? `Remove saved ${mediaType}` : `Save ${mediaType}`}
-                                                                aria-pressed={saved}
-                                                                onClick={() => toggleMediaSaved(item, mediaType)}
-                                                            ><FaBookmark aria-hidden="true" /></button>
-                                                        </div>
-                                                    );
-                                                })}
-                                                {!mediaSearching && !mediaResults.length && <span>Search for something to share.</span>}
+                                        <button className="chat-primary-button" type="submit" disabled={mediaSearching || mediaQuery.trim().length < 2}>
+                                            {mediaSearching ? "Searching…" : "Search"}
+                                        </button>
+                                    </form>
+                                    <div className="wa-media-results">
+                                        {mediaResults.map((item) => (
+                                            <div className="wa-media-choice" key={item.id}>
+                                                <button
+                                                    type="button"
+                                                    aria-label={`Send ${mediaType}`}
+                                                    onClick={() => sendMessage(null, { content: item.url, type: mediaType })}
+                                                ><img src={item.previewUrl} alt="" loading="lazy" /></button>
                                             </div>
-                                        </>
-                                    )}
+                                        ))}
+                                        {!mediaSearching && !mediaResults.length && <span>Search for something to share.</span>}
+                                    </div>
                                 </div>
                             )}
                             {showAttachments && (
@@ -2440,15 +2602,10 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                             />
                             <form className="wa-compose" onSubmit={sendMessage}>
                                 <button type="button" className="wa-compose-icon" aria-label="Add attachment" onClick={() => {
-                                    setShowEmoji(false);
+                                    setShowMediaPicker(false);
                                     setShowAttachments((current) => current ? false : true);
                                 }} aria-haspopup="dialog" title="Upload an image or file, or share a contact"><FaPaperclip /></button>
                                 <div className="wa-compose-message-field">
-                                    <button type="button" className="wa-compose-emoji" aria-label="Choose emoji" onClick={() => {
-                                        setShowAttachments(false);
-                                        setMediaTab("emoji");
-                                        setShowEmoji((current) => !current);
-                                    }} aria-haspopup="dialog" title="Emoji, GIFs, and stickers"><span aria-hidden="true">😊</span></button>
                                     <input
                                         ref={draftRef}
                                         value={draft}
@@ -2458,6 +2615,10 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                         maxLength={4000}
                                         aria-label="Message"
                                     />
+                                    <button type="button" className="wa-compose-stickers" aria-label="Choose a GIF or sticker" onClick={() => {
+                                        setShowAttachments(false);
+                                        setShowMediaPicker((current) => !current);
+                                    }} aria-haspopup="dialog" aria-expanded={showMediaPicker} title="GIFs and stickers"><FaStickyNote aria-hidden="true" /></button>
                                 </div>
                                 {recording && <span className="wa-recording-time" role="status">Recording {recordingSeconds}s</span>}
                                 {!draft.trim() ? (

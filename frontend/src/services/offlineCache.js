@@ -1,5 +1,6 @@
 const DATABASE_NAME = "smartcampus-offline";
 const STORE_NAME = "api-responses";
+const CHAT_OUTBOX_STORE = "chat-outbox";
 const CACHE_FRESH_MS = 5_000;
 const memoryCache = new Map();
 let databasePromise;
@@ -11,13 +12,18 @@ const openDatabase = () => {
     if (databasePromise) return databasePromise;
 
     databasePromise = new Promise((resolve, reject) => {
-        const request = window.indexedDB.open(DATABASE_NAME, 1);
+        const request = window.indexedDB.open(DATABASE_NAME, 2);
         request.onupgradeneeded = () => {
             const database = request.result;
             if (!database.objectStoreNames.contains(STORE_NAME)) {
                 database.createObjectStore(STORE_NAME, { keyPath: "key" });
             }
+            if (!database.objectStoreNames.contains(CHAT_OUTBOX_STORE)) {
+                const outbox = database.createObjectStore(CHAT_OUTBOX_STORE, { keyPath: "id" });
+                outbox.createIndex("accountId", "accountId");
+            }
         };
+
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error || new Error("Could not open offline data storage."));
         request.onblocked = () => reject(new Error("Offline data storage is blocked by another tab."));
@@ -27,6 +33,41 @@ const openDatabase = () => {
     });
 
     return databasePromise;
+};
+
+export const enqueueOfflineChatMessage = async (accountId, message) => {
+    const database = await openDatabase();
+    const queuedMessage = { ...message, accountId: String(accountId), queuedAt: Date.now() };
+    return new Promise((resolve, reject) => {
+        const request = database.transaction(CHAT_OUTBOX_STORE, "readwrite")
+            .objectStore(CHAT_OUTBOX_STORE)
+            .put(queuedMessage);
+        request.onsuccess = () => resolve(queuedMessage);
+        request.onerror = () => reject(request.error || new Error("Could not save this message for delivery."));
+    });
+};
+
+export const readOfflineChatMessages = async (accountId) => {
+    const database = await openDatabase();
+    return new Promise((resolve, reject) => {
+        const request = database.transaction(CHAT_OUTBOX_STORE, "readonly")
+            .objectStore(CHAT_OUTBOX_STORE)
+            .index("accountId")
+            .getAll(String(accountId));
+        request.onsuccess = () => resolve((request.result || []).sort((first, second) => first.queuedAt - second.queuedAt));
+        request.onerror = () => reject(request.error || new Error("Could not read messages waiting for delivery."));
+    });
+};
+
+export const removeOfflineChatMessage = async (messageId) => {
+    const database = await openDatabase();
+    return new Promise((resolve, reject) => {
+        const request = database.transaction(CHAT_OUTBOX_STORE, "readwrite")
+            .objectStore(CHAT_OUTBOX_STORE)
+            .delete(messageId);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error || new Error("Could not remove a delivered message from the outbox."));
+    });
 };
 
 export const readOfflineResponse = async (key) => {

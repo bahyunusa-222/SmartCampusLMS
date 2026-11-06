@@ -165,6 +165,43 @@ const remove = async (key) => {
     if (error) throw new Error(`Unable to remove stored file: ${error.message}`);
 };
 
+const listAllFiles = async () => {
+    const bucket = getClient().storage.from(bucketName);
+    const keys = [];
+    const visit = async (prefix = "") => {
+        let offset = 0;
+        const pageSize = 100;
+        while (true) {
+            const { data, error } = await bucket.list(prefix, {
+                limit: pageSize,
+                offset,
+                sortBy: { column: "name", order: "asc" }
+            });
+            if (error) throw new Error(`Unable to enumerate stored files: ${error.message}`);
+            for (const entry of data || []) {
+                const key = prefix ? `${prefix}/${entry.name}` : entry.name;
+                if (entry.id == null && entry.metadata == null) {
+                    await visit(key);
+                } else {
+                    keys.push(key);
+                }
+            }
+            if (!data || data.length < pageSize) break;
+            offset += data.length;
+        }
+    };
+    await visit();
+    return keys;
+};
+
+const removeAllFiles = async (keys) => {
+    const bucket = getClient().storage.from(bucketName);
+    for (let index = 0; index < keys.length; index += 100) {
+        const { error } = await bucket.remove(keys.slice(index, index + 100));
+        if (error) throw new Error(`Unable to remove stored files: ${error.message}`);
+    }
+};
+
 module.exports = {
     bucketName,
     isConfigured,
@@ -174,5 +211,7 @@ module.exports = {
     resolveChatUpload,
     download,
     signedDownloadUrl,
-    remove
+    remove,
+    listAllFiles,
+    removeAllFiles
 };
