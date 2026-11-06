@@ -48,6 +48,7 @@ const originalEnrollmentFindOne = Enrollment.findOne;
 const originalUserFindByPk = User.findByPk;
 const originalSupabaseJwtSecret = process.env.SUPABASE_JWT_SECRET;
 const originalGiphyApiKey = process.env.GIPHY_API_KEY;
+const originalTenorApiKey = process.env.TENOR_API_KEY;
 const originalFetch = global.fetch;
 
 afterEach(() => {
@@ -80,6 +81,8 @@ afterEach(() => {
     else process.env.SUPABASE_JWT_SECRET = originalSupabaseJwtSecret;
     if (originalGiphyApiKey === undefined) delete process.env.GIPHY_API_KEY;
     else process.env.GIPHY_API_KEY = originalGiphyApiKey;
+    if (originalTenorApiKey === undefined) delete process.env.TENOR_API_KEY;
+    else process.env.TENOR_API_KEY = originalTenorApiKey;
     global.fetch = originalFetch;
 });
 
@@ -845,6 +848,42 @@ test("GIF search requests safe-rated GIFs from GIPHY", async () => {
     assert.equal(requestUrl.searchParams.get("api_key"), "test-giphy-key");
     assert.equal(requestUrl.searchParams.get("q"), "happy");
     assert.equal(requestUrl.searchParams.get("rating"), "g");
+    assert.deepEqual(response.body.results, [{
+        id: "gif-1",
+        url: "https://media.example/gif.gif",
+        previewUrl: "https://media.example/tiny.gif"
+    }]);
+});
+
+test("GIF search falls back to the configured Tenor key when GIPHY is not configured", async () => {
+    delete process.env.GIPHY_API_KEY;
+    process.env.TENOR_API_KEY = "test-tenor-key";
+    ChatProfile.findOne = async () => ({ id: "student-profile", userId: 7 });
+    let requestUrl;
+    global.fetch = async (url) => {
+        requestUrl = new URL(url);
+        return {
+            ok: true,
+            json: async () => ({
+                results: [{
+                    id: "gif-1",
+                    media_formats: {
+                        gif: { url: "https://media.example/gif.gif" },
+                        tinygif: { url: "https://media.example/tiny.gif" }
+                    }
+                }]
+            })
+        };
+    };
+    const response = makeResponse();
+
+    await chatController.searchMedia({
+        user: { id: 7 },
+        query: { q: "happy", type: "gif" }
+    }, response);
+
+    assert.equal(requestUrl.hostname, "tenor.googleapis.com");
+    assert.equal(requestUrl.searchParams.get("key"), "test-tenor-key");
     assert.deepEqual(response.body.results, [{
         id: "gif-1",
         url: "https://media.example/gif.gif",

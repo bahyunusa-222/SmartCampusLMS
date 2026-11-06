@@ -1091,28 +1091,53 @@ exports.searchMedia = async (req, res, next) => {
         const query = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 80) : "";
         const type = req.query.type === "sticker" ? "sticker" : "gif";
         if (query.length < 2) return res.status(400).json({ message: "Enter at least two characters to search." });
-        if (!process.env.GIPHY_API_KEY) {
+        const provider = process.env.GIPHY_API_KEY ? "giphy" : process.env.TENOR_API_KEY ? "tenor" : null;
+        if (!provider) {
             return res.status(503).json({ message: "GIF search is not configured. Set GIPHY_API_KEY on the backend." });
         }
-        const endpoint = new URL(`https://api.giphy.com/v1/${type === "sticker" ? "stickers" : "gifs"}/search`);
-        endpoint.search = new URLSearchParams({
-            api_key: process.env.GIPHY_API_KEY,
-            q: query,
-            limit: "12",
-            rating: "g"
-        });
+        const endpoint = provider === "giphy"
+            ? new URL(`https://api.giphy.com/v1/${type === "sticker" ? "stickers" : "gifs"}/search`)
+            : new URL("https://tenor.googleapis.com/v2/search");
+        endpoint.search = provider === "giphy"
+            ? new URLSearchParams({
+                api_key: process.env.GIPHY_API_KEY,
+                q: query,
+                limit: "12",
+                rating: "g"
+            })
+            : new URLSearchParams({
+                q: query,
+                key: process.env.TENOR_API_KEY,
+                client_key: "smartcampus",
+                limit: "12",
+                ...(type === "sticker" ? { searchfilter: "sticker" } : {}),
+                media_filter: type === "sticker"
+                    ? "webp_transparent,tinywebp_transparent"
+                    : "gif,tinygif"
+            });
         const response = await fetch(endpoint, { signal: AbortSignal.timeout(8000) });
         if (!response.ok) {
-            console.error("GIPHY search failed with status", response.status);
+            console.error(`${provider} search failed with status`, response.status);
             return res.status(502).json({ message: "GIF search is temporarily unavailable." });
         }
         const data = await response.json();
-        const results = (data.data || []).map((item) => {
-            const images = item.images || {};
-            const media = images.original || images.downsized_medium || images.fixed_height;
-            const preview = images.fixed_width_small || images.fixed_height_small || media;
-            return media?.url ? { id: item.id, url: media.url, previewUrl: preview?.url || media.url } : null;
-        }).filter(Boolean);
+        const results = provider === "giphy"
+            ? (data.data || []).map((item) => {
+                const images = item.images || {};
+                const media = images.original || images.downsized_medium || images.fixed_height;
+                const preview = images.fixed_width_small || images.fixed_height_small || media;
+                return media?.url ? { id: item.id, url: media.url, previewUrl: preview?.url || media.url } : null;
+            }).filter(Boolean)
+            : (data.results || []).map((item) => {
+                const formats = item.media_formats || {};
+                const media = type === "sticker"
+                    ? (formats.webp_transparent || formats.gif_transparent)
+                    : (formats.gif || formats.tinygif);
+                const preview = type === "sticker"
+                    ? (formats.tinywebp_transparent || formats.tinygif_transparent || media)
+                    : (formats.tinygif || media);
+                return media?.url ? { id: item.id, url: media.url, previewUrl: preview?.url || media.url } : null;
+            }).filter(Boolean);
         return res.json({ results });
     } catch (error) {
         if (error.name === "TimeoutError" || error.name === "AbortError") {
