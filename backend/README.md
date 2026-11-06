@@ -125,10 +125,12 @@ provide authenticated presence/typing updates and a message-delivery fallback.
 The in-memory presence/typing relay is intended for a single backend instance;
 use a shared pub/sub adapter before scaling the API horizontally.
 
-Configure `TENOR_API_KEY` in the backend environment to enable GIF/sticker
-search. Voice notes are limited to 5 MB and stored in PostgreSQL; users can
-stream them only after the backend rechecks their course membership or private
-conversation. Saved and hidden messages are persisted per chat profile.
+Configure `GIPHY_API_KEY` in the backend environment to enable GIF/sticker
+search. The backend uses GIPHY's GIF and sticker search endpoints and requests
+general-audience (`g`) results. Voice notes are limited to 5 MB and stored in
+PostgreSQL; users can stream them only after the backend rechecks their course
+membership or private conversation. Saved and hidden messages are persisted per
+chat profile.
 
 Configure `OPENAI_API_KEY` in the backend `.env` file to enable the AI
 assistant. The key must remain server-side; do not put it in a frontend
