@@ -3,15 +3,19 @@ process.env.DB_NAME = "test";
 process.env.DB_USER = "test";
 process.env.DB_PASSWORD = "test";
 
-const { afterEach, test } = require("node:test");
+const { afterEach, beforeEach, test } = require("node:test");
 const assert = require("node:assert/strict");
 const bcrypt = require("bcrypt");
 const User = require("../src/models/User");
+const School = require("../src/models/School");
+const Department = require("../src/models/Department");
 const authController = require("../src/controllers/authController");
 
 const originalFindOne = User.findOne;
 const originalFindByPk = User.findByPk;
 const originalCreate = User.create;
+const originalSchoolFindByPk = School.findByPk;
+const originalDepartmentFindOne = Department.findOne;
 const originalJwtSecret = process.env.JWT_SECRET;
 const originalGoogleClientId = process.env.GOOGLE_CLIENT_ID;
 const originalFetch = global.fetch;
@@ -21,6 +25,8 @@ afterEach(() => {
     User.findOne = originalFindOne;
     User.findByPk = originalFindByPk;
     User.create = originalCreate;
+    School.findByPk = originalSchoolFindByPk;
+    Department.findOne = originalDepartmentFindOne;
     global.fetch = originalFetch;
     if (originalJwtSecret === undefined) {
         delete process.env.JWT_SECRET;
@@ -32,6 +38,11 @@ afterEach(() => {
     } else {
         process.env.GOOGLE_CLIENT_ID = originalGoogleClientId;
     }
+});
+
+beforeEach(() => {
+    School.findByPk = async (id) => ({ id: Number(id) });
+    Department.findOne = async ({ where }) => ({ id: Number(where.id), schoolId: Number(where.schoolId) });
 });
 
 const createResponse = () => ({
@@ -126,7 +137,9 @@ test("email registration creates a student account without requiring a phone num
             password: "student-password",
             confirmPassword: "student-password",
             role: "student",
-            matNumber: "STU-2026"
+            matNumber: "STU-2026",
+            schoolId: "1",
+            departmentId: "11"
         }
     }, response);
 
@@ -135,6 +148,8 @@ test("email registration creates a student account without requiring a phone num
     assert.equal(createdUser.fullName, "Student Example");
     assert.equal(createdUser.email, "student@example.edu");
     assert.equal(createdUser.role, "student");
+    assert.equal(createdUser.schoolId, 1);
+    assert.equal(createdUser.departmentId, 11);
     assert.equal(createdUser.matNumber, "STU-2026");
     assert.equal(createdUser.phone, null);
     assert.equal(createdUser.passwordLoginEnabled, true);
@@ -168,7 +183,9 @@ test("email registration creates lecturer accounts without student-only details"
             email: "lecturer@example.edu",
             password: "lecturer-password",
             confirmPassword: "lecturer-password",
-            role: "lecturer"
+            role: "lecturer",
+            schoolId: "1",
+            departmentId: "11"
         }
     }, response);
 
@@ -195,7 +212,9 @@ test("email registration rejects an email that already exists regardless of inpu
             email: " Lecturer@Example.edu ",
             password: "lecturer-password",
             confirmPassword: "lecturer-password",
-            role: "lecturer"
+            role: "lecturer",
+            schoolId: "1",
+            departmentId: "11"
         }
     }, response);
 
@@ -295,7 +314,12 @@ test("Google registration creates lecturer accounts without student-only details
     const response = createResponse();
 
     await authController.googleRegister({
-        body: { credential: "verified-test-credential", role: "lecturer" }
+        body: {
+            credential: "verified-test-credential",
+            role: "lecturer",
+            schoolId: "1",
+            departmentId: "11"
+        }
     }, response);
 
     assert.equal(response.statusCode, 201);
@@ -304,6 +328,92 @@ test("Google registration creates lecturer accounts without student-only details
     assert.equal(createdUser.phone, null);
     assert.equal(createdUser.passwordLoginEnabled, false);
     assert.ok(response.body.token);
+});
+
+test("Google registration signs in an existing account instead of creating a duplicate", async () => {
+    process.env.GOOGLE_CLIENT_ID = "test-google-client-id";
+    global.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+            aud: "test-google-client-id",
+            iss: "https://accounts.google.com",
+            email_verified: true,
+            exp: String(Math.floor(Date.now() / 1000) + 3600),
+            sub: "google-existing-123",
+            email: "existing@example.edu",
+            name: "Existing User"
+        })
+    });
+    const existingUser = {
+        id: 45,
+        tokenVersion: 0,
+        fullName: "Existing User",
+        email: "existing@example.edu",
+        googleId: "google-existing-123",
+        role: "student",
+        toJSON() {
+            return { ...this };
+        }
+    };
+    User.findOne = async () => existingUser;
+    User.create = async () => assert.fail("An existing account must not be duplicated");
+    const response = createResponse();
+
+    await authController.googleRegister({
+        body: { credential: "verified-test-credential", role: "lecturer" }
+    }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.user.role, "student");
+    assert.ok(response.body.token);
+});
+
+test("Google registration asks new users for school and department details", async () => {
+    process.env.GOOGLE_CLIENT_ID = "test-google-client-id";
+    global.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+            aud: "test-google-client-id",
+            iss: "https://accounts.google.com",
+            email_verified: true,
+            exp: String(Math.floor(Date.now() / 1000) + 3600),
+            sub: "google-new-123",
+            email: "new@example.edu",
+            name: "New User"
+        })
+    });
+    User.findOne = async () => null;
+    User.create = async () => assert.fail("Incomplete registration must not create an account");
+    const response = createResponse();
+
+    await authController.googleRegister({
+        body: { credential: "verified-test-credential", role: "lecturer" }
+    }, response);
+
+    assert.equal(response.statusCode, 428);
+    assert.equal(response.body.profileRequired, true);
+});
+
+test("email registration rejects a department that belongs to another school", async () => {
+    Department.findOne = async () => null;
+    User.findOne = async () => assert.fail("Invalid school placement must be rejected before account lookup");
+    User.create = async () => assert.fail("Invalid school placement must not create an account");
+    const response = createResponse();
+
+    await authController.register({
+        body: {
+            fullName: "Lecturer Example",
+            email: "lecturer@example.edu",
+            password: "lecturer-password",
+            confirmPassword: "lecturer-password",
+            role: "lecturer",
+            schoolId: "1",
+            departmentId: "22"
+        }
+    }, response);
+
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /department in your selected school/i);
 });
 
 for (const role of ["student", "lecturer"]) {
@@ -369,7 +479,9 @@ test("email registration rejects an invalid phone number when one is provided", 
             confirmPassword: "student-password",
             role: "student",
             matNumber: "STU-2026",
-            phone: "not a phone"
+            phone: "not a phone",
+            schoolId: "1",
+            departmentId: "11"
         }
     }, response);
 

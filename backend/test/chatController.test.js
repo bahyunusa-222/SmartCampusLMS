@@ -45,6 +45,8 @@ const originalEnrollmentFindAll = Enrollment.findAll;
 const originalEnrollmentFindOne = Enrollment.findOne;
 const originalUserFindByPk = User.findByPk;
 const originalSupabaseJwtSecret = process.env.SUPABASE_JWT_SECRET;
+const originalTenorApiKey = process.env.TENOR_API_KEY;
+const originalFetch = global.fetch;
 
 afterEach(() => {
     ChatProfile.findOne = originalFindOne;
@@ -73,6 +75,9 @@ afterEach(() => {
     User.findByPk = originalUserFindByPk;
     if (originalSupabaseJwtSecret === undefined) delete process.env.SUPABASE_JWT_SECRET;
     else process.env.SUPABASE_JWT_SECRET = originalSupabaseJwtSecret;
+    if (originalTenorApiKey === undefined) delete process.env.TENOR_API_KEY;
+    else process.env.TENOR_API_KEY = originalTenorApiKey;
+    global.fetch = originalFetch;
 });
 
 const makeResponse = () => ({
@@ -712,4 +717,77 @@ test("profile visibility updates accept only supported scopes", async () => {
         invalidResponse
     );
     assert.equal(invalidResponse.statusCode, 400);
+});
+
+test("GIF search requests animated GIF formats from Tenor", async () => {
+    process.env.TENOR_API_KEY = "test-tenor-key";
+    ChatProfile.findOne = async () => ({ id: "student-profile", userId: 7 });
+    let requestUrl;
+    global.fetch = async (url) => {
+        requestUrl = new URL(url);
+        return {
+            ok: true,
+            json: async () => ({
+                results: [{
+                    id: "gif-1",
+                    media_formats: {
+                        gif: { url: "https://media.example/gif.gif" },
+                        tinygif: { url: "https://media.example/tiny.gif" }
+                    }
+                }]
+            })
+        };
+    };
+    const response = makeResponse();
+
+    await chatController.searchMedia({
+        user: { id: 7 },
+        query: { q: "happy", type: "gif" }
+    }, response);
+
+    assert.equal(requestUrl.pathname, "/v2/search");
+    assert.equal(requestUrl.searchParams.get("key"), "test-tenor-key");
+    assert.equal(requestUrl.searchParams.get("q"), "happy");
+    assert.equal(requestUrl.searchParams.get("media_filter"), "gif,tinygif");
+    assert.equal(requestUrl.searchParams.has("searchfilter"), false);
+    assert.deepEqual(response.body.results, [{
+        id: "gif-1",
+        url: "https://media.example/gif.gif",
+        previewUrl: "https://media.example/tiny.gif"
+    }]);
+});
+
+test("sticker search asks Tenor for sticker content and transparent previews", async () => {
+    process.env.TENOR_API_KEY = "test-tenor-key";
+    ChatProfile.findOne = async () => ({ id: "student-profile", userId: 7 });
+    let requestUrl;
+    global.fetch = async (url) => {
+        requestUrl = new URL(url);
+        return {
+            ok: true,
+            json: async () => ({
+                results: [{
+                    id: "sticker-1",
+                    media_formats: {
+                        webp_transparent: { url: "https://media.example/sticker.webp" },
+                        tinywebp_transparent: { url: "https://media.example/sticker-preview.webp" }
+                    }
+                }]
+            })
+        };
+    };
+    const response = makeResponse();
+
+    await chatController.searchMedia({
+        user: { id: 7 },
+        query: { q: "hello", type: "sticker" }
+    }, response);
+
+    assert.equal(requestUrl.searchParams.get("searchfilter"), "sticker");
+    assert.equal(requestUrl.searchParams.get("media_filter"), "webp_transparent,tinywebp_transparent");
+    assert.deepEqual(response.body.results, [{
+        id: "sticker-1",
+        url: "https://media.example/sticker.webp",
+        previewUrl: "https://media.example/sticker-preview.webp"
+    }]);
 });

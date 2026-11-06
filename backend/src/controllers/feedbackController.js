@@ -27,7 +27,7 @@ exports.createFeedback = async (req, res) => {
         const cleanComment = comment.trim();
         try {
             await emailService.sendAppEmail({
-                to: process.env.FEEDBACK_RECIPIENT_EMAIL || "bahy1878@gmail.com",
+                to: process.env.FEEDBACK_RECIPIENT_EMAIL,
                 subject: `SmartCampus feedback — ${rating}/5 stars`,
                 text: [
                     `Rating: ${rating}/5 stars`,
@@ -80,7 +80,7 @@ exports.submitCollaboration = async (req, res) => {
     const cleanEmail = typeof email === "string" ? email.trim() : "";
     try {
         await emailService.sendAppEmail({
-            to: process.env.COLLABORATION_RECIPIENT_EMAIL || "yb22423255@utg.edu.gm",
+            to: process.env.COLLABORATION_RECIPIENT_EMAIL,
             subject: "SmartCampus collaboration message",
             replyTo: cleanEmail || undefined,
             text: [

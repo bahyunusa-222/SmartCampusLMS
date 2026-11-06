@@ -37,6 +37,15 @@ const loadDatabaseConfig = (environment) => {
     return sequelize;
 };
 
+test("User model uses the exported Sequelize instance", () => {
+    const sequelize = loadDatabaseConfig({
+        DATABASE_URL: "postgres://test:test@db.example.com:5432/postgres"
+    });
+    const User = require("../src/models/User");
+
+    assert.equal(User.sequelize, sequelize);
+});
+
 after(async () => {
     await Promise.all(sequelizeInstances.map((sequelize) => sequelize.close()));
     for (const key of configKeys) {

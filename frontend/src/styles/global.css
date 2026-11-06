@@ -10070,6 +10070,22 @@ a.dashboard-stat:hover {
     text-decoration: underline;
 }
 
+.catalog-card button.catalog-link {
+    width: 100%;
+    padding-right: 0;
+    padding-bottom: 0;
+    padding-left: 0;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+}
+
+.catalog-card button.catalog-link:disabled {
+    cursor: wait;
+    opacity: 0.7;
+}
+
 .catalog-link svg {
     font-size: 0.7rem;
 }
@@ -11361,6 +11377,26 @@ a:focus-visible {
     color: var(--theme-text);
     font-size: 0.9rem;
     font-weight: 600;
+}
+
+.course-create-form .course-schoolwide-toggle {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+}
+
+.course-create-form .course-schoolwide-toggle input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0;
+    accent-color: var(--theme-accent);
+}
+
+.course-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
 }
 
 .course-create-form input,

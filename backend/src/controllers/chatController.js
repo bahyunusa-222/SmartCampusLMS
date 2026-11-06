@@ -1055,7 +1055,10 @@ exports.searchMedia = async (req, res, next) => {
             key: process.env.TENOR_API_KEY,
             client_key: "smartcampus",
             limit: "12",
-            media_filter: type === "sticker" ? "webp_transparent" : "gif,tinygif"
+            ...(type === "sticker" ? { searchfilter: "sticker" } : {}),
+            media_filter: type === "sticker"
+                ? "webp_transparent,tinywebp_transparent"
+                : "gif,tinygif"
         });
         const response = await fetch(endpoint, { signal: AbortSignal.timeout(8000) });
         if (!response.ok) {
@@ -1066,9 +1069,11 @@ exports.searchMedia = async (req, res, next) => {
         const results = (data.results || []).map((item) => {
             const formats = item.media_formats || {};
             const media = type === "sticker"
-                ? formats.webp_transparent
+                ? (formats.webp_transparent || formats.gif_transparent)
                 : (formats.gif || formats.tinygif);
-            const preview = formats.tinygif || media;
+            const preview = type === "sticker"
+                ? (formats.tinywebp_transparent || formats.tinygif_transparent || media)
+                : (formats.tinygif || media);
             return media?.url ? { id: item.id, url: media.url, previewUrl: preview?.url || media.url } : null;
         }).filter(Boolean);
         return res.json({ results });

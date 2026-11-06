@@ -501,7 +501,7 @@ const HelpFeedback = () => {
                         <span className="settings-section-icon"><FaStar aria-hidden="true" /></span>
                         <div>
                             <h2>How is your SmartCampus experience?</h2>
-                            <p>Your rating and message are emailed directly to the developer’s private email. If delivery is unavailable, you will see an error instead of a success message.</p>
+                            <p>Your rating and message are emailed to the configured private feedback recipient. If delivery is unavailable, you will see an error instead of a success message.</p>
                         </div>
                     </div>
                     {status?.type === "success" ? (

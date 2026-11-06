@@ -84,6 +84,16 @@ const User = sequelize.define("User", {
     phone: {
         type: DataTypes.STRING(30),
         allowNull: true
+    },
+
+    schoolId: {
+        type: DataTypes.INTEGER,
+        allowNull: true
+    },
+
+    departmentId: {
+        type: DataTypes.INTEGER,
+        allowNull: true
     }
 });
 

@@ -21,7 +21,7 @@ const { sequelize } = require("../config/db");
 const recordAuditLog = require("../utils/recordAuditLog");
 const materialUpload = require("../utils/materialUpload");
 const { removeStoredUpload } = require("../utils/storedUpload");
-const { fn, col } = require("sequelize");
+const { Op, fn, col } = require("sequelize");
 const {
     COURSE_PERMISSIONS,
     COURSE_PERMISSION_ROLES,
@@ -134,18 +134,25 @@ const idValue = (value) => {
 exports.createCourse = async (req, res) => {
     let uploadedFile;
     try {
-        const { departmentId } = req.body;
+        const lecturer = await User.findByPk(req.user.id, { attributes: ["schoolId", "departmentId"] });
+        if (!lecturer?.schoolId || !lecturer.departmentId) {
+            return res.status(409).json({ message: "Complete your school and department profile before creating courses." });
+        }
         const fields = validateCourseFields(req.body, true);
         const introContent = optionalText(req.body.introContent ?? req.body.contents, 60000, "Introductory content") || "";
         uploadedFile = await materialUpload(req.file, req.body, req.user.id);
         let validDepartmentId = null;
+        const { departmentId } = req.body;
         if (departmentId !== undefined && departmentId !== null) {
             const parsedDepartmentId = Number(departmentId);
-            if (!Number.isSafeInteger(parsedDepartmentId) || parsedDepartmentId <= 0) {
+            if (!Number.isSafeInteger(parsedDepartmentId) || parsedDepartmentId <= 0 ||
+                parsedDepartmentId !== lecturer.departmentId) {
                 if (uploadedFile) await removeStoredUpload(uploadedFile.fileUrl);
-                return res.status(400).json({ message: "Department not found" });
+                return res.status(400).json({ message: "Courses can only be limited to your registered department." });
             }
-            const department = await Department.findByPk(parsedDepartmentId);
+            const department = await Department.findOne({
+                where: { id: parsedDepartmentId, schoolId: lecturer.schoolId }
+            });
             if (!department) {
                 if (uploadedFile) await removeStoredUpload(uploadedFile.fileUrl);
                 return res.status(400).json({ message: "Department not found" });
@@ -163,6 +170,7 @@ exports.createCourse = async (req, res) => {
                         contentFileUrl: null,
                         contentFileName: null,
                         lecturerId: req.user.id,
+                        schoolId: lecturer.schoolId,
                         classCode,
                         departmentId: validDepartmentId
                     }, { transaction });
@@ -392,8 +400,20 @@ exports.deleteCourse = async (req, res) => {
 
 exports.getCourses = async (req, res) => {
     try {
+        const student = await User.findByPk(req.user.id, { attributes: ["schoolId", "departmentId"] });
+        if (!student?.schoolId || !student.departmentId) {
+            return res.status(409).json({ message: "Complete your school and department profile to browse courses." });
+        }
         const courses = await Course.findAll({
-            where: { status: "active", enrollmentEnabled: true },
+            where: {
+                status: "active",
+                enrollmentEnabled: true,
+                schoolId: student.schoolId,
+                [Op.or]: [
+                    { departmentId: null },
+                    { departmentId: student.departmentId }
+                ]
+            },
             attributes: { exclude: ["classCode"] },
             include: [{
                 model: User,

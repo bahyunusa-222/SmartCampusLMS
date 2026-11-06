@@ -6,6 +6,7 @@ const requireRole = require("../middlewares/roleMiddleware");
 
 // Students join a class using a code
 router.post("/join", authMiddleware, requireRole("student"), enrollmentController.joinByCode);
+router.post("/courses/:courseId/join", authMiddleware, requireRole("student"), enrollmentController.joinById);
 router.delete("/:courseId", authMiddleware, requireRole("student"), enrollmentController.leaveCourse);
 
 // Get student's enrolled courses

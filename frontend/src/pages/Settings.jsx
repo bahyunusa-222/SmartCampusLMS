@@ -163,8 +163,12 @@ const Settings = ({ theme, setTheme }) => {
         fullName: user?.fullName || "",
         email: user?.email || "",
         matNumber: user?.matNumber || "",
-        phone: user?.phone || ""
+        phone: user?.phone || "",
+        schoolId: user?.schoolId ? String(user.schoolId) : "",
+        departmentId: user?.departmentId ? String(user.departmentId) : ""
     });
+    const [academicSchools, setAcademicSchools] = useState([]);
+    const [academicCatalogError, setAcademicCatalogError] = useState("");
     const [password, setPassword] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
     const [reducedMotion, setReducedMotion] = useState(() => readReducedMotion(user?.id));
     const [defaultPage, setDefaultPage] = useState(() => readDefaultPage(user?.id));
@@ -197,7 +201,8 @@ const Settings = ({ theme, setTheme }) => {
     const courseSettingsRoute = settingsPage === "courses";
     const loadingCourses = courseSettingsRoute && !coursesLoaded;
     const courseSettingsSection = settingsSubpage;
-    const profileDetailsPage = ["name", "email", "student-id", "phone"].includes(settingsSubpage);
+    const profileDetailsPage = ["name", "email", "student-id", "phone", "academic"].includes(settingsSubpage);
+    const selectedAcademicSchool = academicSchools.find((school) => String(school.id) === profile.schoolId);
     const profilePicturePage = settingsSubpage === "picture";
     const appearancePage = settingsSubpage === "appearance";
     const textSizePage = settingsSubpage === "text-size";
@@ -241,13 +246,14 @@ const Settings = ({ theme, setTheme }) => {
         {
             to: "/help-feedback",
             title: "Help & Feedback",
-            description: "Follow step-by-step navigation guides or email private feedback to the developer.",
+            description: "Follow step-by-step navigation guides or send private feedback.",
             keywords: "help support guide feedback",
             Icon: FaLifeRing
         }
     ] : showProfileSettings && !settingsSubpage ? [
         { to: "/settings/profile/name", title: "Full name", description: "Update your account name.", keywords: "name", Icon: FaUserCircle },
         { to: "/settings/profile/email", title: "Email address", description: "Update your account email.", keywords: "email", Icon: FaUserCircle },
+        { to: "/settings/profile/academic", title: "School and department", description: "Set your academic school and department.", keywords: "school department programme", Icon: FaBookOpen },
         { to: "/settings/profile/picture", title: "Profile picture", description: "Add or remove your account picture.", keywords: "photo avatar image", Icon: FaUserCircle },
         ...(user?.role === "student" ? [
             { to: "/settings/profile/student-id", title: "Student ID", description: "Update your matriculation number.", keywords: "matriculation id", Icon: FaUserCircle },
@@ -295,6 +301,7 @@ const Settings = ({ theme, setTheme }) => {
         "profile/email": "Email address",
         "profile/student-id": "Student ID",
         "profile/phone": "Phone number",
+        "profile/academic": "School and department",
         "profile/picture": "Profile picture",
         "security/password": "Change password",
         "preferences/appearance": "Color theme",
@@ -317,6 +324,7 @@ const Settings = ({ theme, setTheme }) => {
                 "",
                 "name",
                 "email",
+                "academic",
                 "picture",
                 ...(user?.role === "student" ? ["student-id", "phone"] : [])
             ],
@@ -330,6 +338,19 @@ const Settings = ({ theme, setTheme }) => {
             navigate("/settings", { replace: true });
         }
     }, [isSettingsHome, navigate, settingsPage, settingsSubpage, user?.passwordLoginEnabled, user?.role]);
+
+    useEffect(() => {
+        if (settingsPage !== "profile" || settingsSubpage !== "academic") return undefined;
+        let active = true;
+        API.get("/auth/academic-catalog", { skipOfflineCache: true })
+            .then((response) => {
+                if (active) setAcademicSchools(response.data);
+            })
+            .catch((error) => {
+                if (active) setAcademicCatalogError(error.response?.data?.message || "Unable to load schools and departments.");
+            });
+        return () => { active = false; };
+    }, [settingsPage, settingsSubpage]);
 
     useEffect(() => {
         if (!isStaff || !courseSettingsRoute) return undefined;
@@ -364,14 +385,21 @@ const Settings = ({ theme, setTheme }) => {
         setSavingProfile(true);
 
         try {
-            const response = await API.patch("/auth/profile", profile);
+            const updates = { ...profile };
+            if (!profile.schoolId && !profile.departmentId) {
+                delete updates.schoolId;
+                delete updates.departmentId;
+            }
+            const response = await API.patch("/auth/profile", updates);
             localStorage.setItem("user", JSON.stringify(response.data.user));
             window.dispatchEvent(new Event("smartcampus:user-updated"));
             setProfile({
                 fullName: response.data.user.fullName,
                 email: response.data.user.email,
                 matNumber: response.data.user.matNumber || "",
-                phone: response.data.user.phone || ""
+                phone: response.data.user.phone || "",
+                schoolId: response.data.user.schoolId ? String(response.data.user.schoolId) : "",
+                departmentId: response.data.user.departmentId ? String(response.data.user.departmentId) : ""
             });
             setProfileStatus({ type: "success", text: response.data.message });
         } catch (error) {
@@ -708,6 +736,41 @@ const Settings = ({ theme, setTheme }) => {
                                 onChange={(event) => setProfile({ ...profile, phone: event.target.value })}
                             />
                         </label>
+                    )}
+                    {settingsSubpage === "academic" && (
+                        <>
+                            {!academicSchools.length && !academicCatalogError && <p role="status">Loading schools and departments…</p>}
+                            {academicCatalogError && <p className="settings-status error" role="alert">{academicCatalogError}</p>}
+                            <label>
+                                School
+                                <select
+                                    value={profile.schoolId}
+                                    onChange={(event) => setProfile({
+                                        ...profile,
+                                        schoolId: event.target.value,
+                                        departmentId: ""
+                                    })}
+                                    required
+                                >
+                                    <option value="">Select your school</option>
+                                    {academicSchools.map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}
+                                </select>
+                            </label>
+                            <label>
+                                Department / programme
+                                <select
+                                    value={profile.departmentId}
+                                    onChange={(event) => setProfile({ ...profile, departmentId: event.target.value })}
+                                    required
+                                    disabled={!selectedAcademicSchool}
+                                >
+                                    <option value="">Select your department</option>
+                                    {(selectedAcademicSchool?.departments || []).map((department) => (
+                                        <option key={department.id} value={department.id}>{department.name}</option>
+                                    ))}
+                                </select>
+                            </label>
+                        </>
                     )}
                     <div className="settings-form-footer">
                         {profileStatus && (

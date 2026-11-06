@@ -25,11 +25,18 @@ afterEach(() => {
 test("course enrollment rejects archived courses before creating an enrollment", async () => {
     User.findByPk = async (id) => {
         assert.equal(id, 5);
-        return { fullName: "Student Name", email: "student@example.edu", matNumber: "STU-1", phone: "12345" };
+        return {
+            fullName: "Student Name",
+            email: "student@example.edu",
+            matNumber: "STU-1",
+            phone: "12345",
+            schoolId: 2,
+            departmentId: 9
+        };
     };
     Course.findOne = async ({ where }) => {
         assert.deepEqual(where, { classCode: "ABCD1234" });
-        return { id: 22, status: "archived", enrollmentEnabled: true };
+        return { id: 22, status: "archived", enrollmentEnabled: true, schoolId: 2, departmentId: 9 };
     };
     Enrollment.findOne = async () => assert.fail("Archived courses must be rejected before enrollment lookup");
     Enrollment.create = async () => assert.fail("Archived courses must not create enrollment");
@@ -61,12 +68,16 @@ test("student without a phone number can join a course using its class code", as
         fullName: "Student Name",
         email: "student@example.edu",
         matNumber: "STU-1",
-        phone: null
+        phone: null,
+        schoolId: 2,
+        departmentId: 9
     });
     Course.findOne = async () => ({
         id: 22,
         status: "active",
         enrollmentEnabled: true,
+        schoolId: 2,
+        departmentId: null,
         classCode: "ABCD1234",
         contentFileUrl: null,
         toJSON() {
@@ -101,17 +112,61 @@ test("student without a phone number can join a course using its class code", as
     assert.equal(response.body.course.classCode, undefined);
 });
 
-test("reusing a class invitation returns the enrolled course without creating a duplicate", async () => {
+test("class codes cannot bypass school and department course availability", async () => {
     User.findByPk = async () => ({
         fullName: "Student Name",
         email: "student@example.edu",
         matNumber: "STU-1",
-        phone: null
+        schoolId: 3,
+        departmentId: 12
     });
     Course.findOne = async () => ({
         id: 22,
         status: "active",
         enrollmentEnabled: true,
+        schoolId: 2,
+        departmentId: null
+    });
+    Enrollment.findOne = async () => assert.fail("Ineligible students must not be enrolled");
+    Enrollment.create = async () => assert.fail("Ineligible students must not be enrolled");
+
+    const response = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(body) {
+            this.body = body;
+            return this;
+        }
+    };
+
+    await enrollmentController.joinByCode({
+        user: { id: 5, role: "student" },
+        body: { classCode: "abcd1234" }
+    }, response);
+
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.body.message, "This course is not available to your school or department.");
+});
+
+test("reusing a class invitation returns the enrolled course without creating a duplicate", async () => {
+    User.findByPk = async () => ({
+        fullName: "Student Name",
+        email: "student@example.edu",
+        matNumber: "STU-1",
+        phone: null,
+        schoolId: 2,
+        departmentId: 9
+    });
+    Course.findOne = async () => ({
+        id: 22,
+        status: "active",
+        enrollmentEnabled: true,
+        schoolId: 2,
+        departmentId: null,
         classCode: "ABCD1234",
         contentFileUrl: null,
         toJSON() {

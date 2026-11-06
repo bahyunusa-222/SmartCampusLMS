@@ -8,6 +8,7 @@ const Course = sequelize.define("Course", {
     contentFileUrl: { type: DataTypes.STRING, allowNull: true },
     contentFileName: { type: DataTypes.STRING, allowNull: true },
     lecturerId: { type: DataTypes.INTEGER, allowNull: false },
+    schoolId: { type: DataTypes.INTEGER, allowNull: true },
     departmentId: { type: DataTypes.INTEGER, allowNull: true },
     academicCode: { type: DataTypes.STRING(50), allowNull: true },
     category: { type: DataTypes.STRING(100), allowNull: true },

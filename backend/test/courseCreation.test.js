@@ -6,12 +6,14 @@ process.env.DB_PASSWORD = "test";
 const { afterEach, test } = require("node:test");
 const assert = require("node:assert/strict");
 const Course = require("../src/models/Course");
+const User = require("../src/models/User");
 const Lesson = require("../src/models/Lesson");
 const AuditLog = require("../src/models/AuditLog");
 const { sequelize } = require("../src/config/db");
 const courseController = require("../src/controllers/courseController");
 
 const originalCourseCreate = Course.create;
+const originalUserFindByPk = User.findByPk;
 const originalCourseFindOne = Course.findOne;
 const originalLessonCreate = Lesson.create;
 const originalAuditLogCreate = AuditLog.create;
@@ -19,6 +21,7 @@ const originalTransaction = sequelize.transaction;
 
 afterEach(() => {
     Course.create = originalCourseCreate;
+    User.findByPk = originalUserFindByPk;
     Course.findOne = originalCourseFindOne;
     Lesson.create = originalLessonCreate;
     AuditLog.create = originalAuditLogCreate;
@@ -27,6 +30,7 @@ afterEach(() => {
 
 test("lecturer can create a course without a description or course material", async () => {
     let createdCourse;
+    User.findByPk = async () => ({ schoolId: 2, departmentId: 9 });
     Course.findOne = async () => null;
     Course.create = async (data) => {
         createdCourse = data;
@@ -69,6 +73,7 @@ test("lecturer can create a course without a description or course material", as
     assert.equal(response.statusCode, 201);
     assert.equal(createdCourse.description, "");
     assert.equal(createdCourse.lecturerId, 7);
+    assert.equal(createdCourse.schoolId, 2);
 });
 
 test("courses automatically capture their creation timestamp", () => {

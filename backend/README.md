@@ -68,17 +68,26 @@ backend over SMTP; the browser does not open a mail application. Configure
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and
 `SMTP_FROM` in `backend/.env` for local development and in the backend hosting
 environment for deployment. Set `FEEDBACK_RECIPIENT_EMAIL` and
-`COLLABORATION_RECIPIENT_EMAIL` if the recipient addresses differ from those in
-`.env.example`. The forms report a delivery error if SMTP is not configured;
-they do not show a success message unless delivery succeeds.
+`COLLABORATION_RECIPIENT_EMAIL` to private recipient addresses. The forms
+report a delivery error if SMTP or a recipient is not configured; they do not
+show a success message unless delivery succeeds.
 
 All routes below require a bearer token unless otherwise stated. The platform
 has two roles: `student` and `lecturer`. Lecturers manage only courses they
 own; students must be enrolled to read or submit course work. The
 `20261004_03_lecturer_student_roles` migration converts legacy admin accounts
 to lecturers, revokes their prior tokens, and restricts the database role enum
-to those two roles. Public email and Google registration can create student
-accounts only; lecturer accounts must be provisioned by the institution.
+to those two roles. Both students and lecturers select a school and department
+when registering. Public `GET /api/auth/academic-catalog` returns the supported
+school/department choices. A Google account that already has a SmartCampus
+account signs in directly; new Google accounts complete the same role-specific
+profile details as email registration.
+
+Student course discovery only returns active, open courses for the student's
+school and department, plus courses the lecturer made available across the
+school. Lecturers' courses are school-wide by default and can be limited to the
+lecturer's own department. Students can join or leave from the course catalog;
+the existing `POST /api/enrollments/join` class-code flow remains available.
 
 | Area | Endpoints |
 |---|---|

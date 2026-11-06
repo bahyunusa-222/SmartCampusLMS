@@ -338,7 +338,7 @@ const Login = () => {
                     <div className="portfolio-contact-grid">
                         <a href="tel:+220833359853"><FaPhone aria-hidden="true" /><span><strong>Phone</strong><small>+220 833359853</small></span></a>
                         <a href="mailto:yb22423255@utg.edu.gm"><FaEnvelope aria-hidden="true" /><span><strong>School email</strong><small>yb22423255@utg.edu.gm</small></span></a>
-                        <a href="mailto:bahy1878@gmail.com"><FaEnvelope aria-hidden="true" /><span><strong>Personal email</strong><small>bahy1878@gmail.com</small></span></a>
+                        <a href="#collaborate"><FaEnvelope aria-hidden="true" /><span><strong>Send a message</strong><small>Use the collaboration form</small></span></a>
                     </div>
                     <div className="portfolio-social-links" aria-label="Developer social profiles">
                         <a href="https://www.instagram.com/yunusabah17/" target="_blank" rel="noopener noreferrer">

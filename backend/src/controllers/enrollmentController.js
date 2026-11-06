@@ -10,11 +10,12 @@ const { Op, fn, col } = require("sequelize");
 exports.joinByCode = async (req, res) => {
     try {
         const student = await User.findByPk(req.user.id, {
-            attributes: ["fullName", "email", "matNumber", "phone"]
+            attributes: ["fullName", "email", "matNumber", "phone", "schoolId", "departmentId"]
         });
-        if (!student || !student.fullName || !student.email || !student.matNumber) {
+        if (!student || !student.fullName || !student.email || !student.matNumber ||
+            !student.schoolId || !student.departmentId) {
             return res.status(400).json({
-                message: "Complete your name, email, and student ID before joining a class."
+                message: "Complete your school, department, and student ID before joining a class."
             });
         }
 
@@ -27,6 +28,10 @@ exports.joinByCode = async (req, res) => {
         if (!course) return res.status(404).json({ message: "Invalid class code. Please check and try again." });
         if (course.status !== "active") {
             return res.status(409).json({ message: "This course is archived and no longer accepts enrollments." });
+        }
+        if (student.schoolId !== course.schoolId ||
+            (course.departmentId && student.departmentId !== course.departmentId)) {
+            return res.status(403).json({ message: "This course is not available to your school or department." });
         }
         if (!course.enrollmentEnabled) {
             return res.status(409).json({ message: "Enrollment for this course is currently closed." });
@@ -50,6 +55,47 @@ exports.joinByCode = async (req, res) => {
         }
         console.error("Failed to join course:", error);
         res.status(500).json({ message: "Failed to join course" });
+    }
+};
+
+exports.joinById = async (req, res) => {
+    const courseId = Number(req.params.courseId);
+    if (!Number.isSafeInteger(courseId) || courseId <= 0) {
+        return res.status(400).json({ message: "Invalid course ID" });
+    }
+
+    try {
+        const student = await User.findByPk(req.user.id, {
+            attributes: ["fullName", "email", "matNumber", "schoolId", "departmentId"]
+        });
+        if (!student || !student.fullName || !student.email || !student.matNumber ||
+            !student.schoolId || !student.departmentId) {
+            return res.status(409).json({ message: "Complete your school, department, and student ID before joining a course." });
+        }
+
+        const course = await Course.findByPk(courseId);
+        if (!course) return res.status(404).json({ message: "Course not found." });
+        if (course.status !== "active" || !course.enrollmentEnabled) {
+            return res.status(409).json({ message: "This course is not accepting enrollments." });
+        }
+        if (course.schoolId !== student.schoolId ||
+            (course.departmentId && course.departmentId !== student.departmentId)) {
+            return res.status(403).json({ message: "This course is not available to your school or department." });
+        }
+
+        const already = await Enrollment.findOne({ where: { studentId: req.user.id, courseId } });
+        if (!already) {
+            await Enrollment.create({ studentId: req.user.id, courseId, permissions: [] });
+        }
+        return res.status(already ? 200 : 201).json({
+            message: already ? "You are already enrolled in this course." : "Joined successfully!"
+        });
+    } catch (error) {
+        if (error.name === "SequelizeUniqueConstraintError") {
+            return res.status(409).json({ message: "You are already enrolled in this course." });
+        }
+        console.error("Failed to join course:", error);
+        return res.status(500).json({ message: "Failed to join course." });
     }
 };
 

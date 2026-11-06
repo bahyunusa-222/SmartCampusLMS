@@ -3,6 +3,7 @@ const rateLimit = require("express-rate-limit");
 const router = express.Router();
 
 const authController = require("../controllers/authController");
+const academicController = require("../controllers/academicController");
 const authMiddleware = require("../middlewares/authMiddleware");
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -17,6 +18,7 @@ const authLimiter = rateLimit({
   AUTH ROUTES
 */
 router.get("/config", authController.getAuthConfig);
+router.get("/academic-catalog", academicController.listCatalog);
 router.post("/register", authLimiter, authController.register);
 router.post("/login", authLimiter, authController.login);
 router.post("/password/forgot", authLimiter, authController.requestPasswordReset);

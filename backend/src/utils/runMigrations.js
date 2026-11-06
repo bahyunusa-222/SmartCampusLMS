@@ -40,6 +40,8 @@ const lessonReadingProgressMigrationName = "20261102_04_lesson_reading_progress"
 const assignmentWorkTypeMigrationName = "20261103_01_assignment_work_type";
 const lessonPrivateNotesMigrationName = "20261103_02_lesson_private_notes";
 const chatMessageDeliveryAndReactionsMigrationName = "20261103_03_chat_message_delivery_reactions";
+const academicCatalogMigrationName = "20261106_01_school_department_catalog";
+const academicCatalog = require("../data/academicCatalog");
 const migrationNames = [
     migrationName,
     followupMigrationName,
@@ -77,7 +79,8 @@ const migrationNames = [
     submissionReadMigrationName,
     announcementCommentsMigrationName,
     lessonReadingProgressMigrationName,
-    assignmentWorkTypeMigrationName
+    assignmentWorkTypeMigrationName,
+    academicCatalogMigrationName
 ];
 const additions = {
     Users: {
@@ -338,6 +341,95 @@ const applyChatMessageDeliveryAndReactionsMigration = async (queryInterface) => 
     }
 };
 
+const applyAcademicCatalogMigration = async (queryInterface) => {
+    let tables = await getTables(queryInterface);
+    if (!hasTable(tables, "Schools")) {
+        await queryInterface.createTable("Schools", {
+            id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true, allowNull: false },
+            name: { type: DataTypes.STRING(160), allowNull: false, unique: true },
+            createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+            updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }
+        });
+    }
+
+    tables = await getTables(queryInterface);
+    for (const [tableName, columns] of Object.entries({
+        Users: {
+            schoolId: { type: DataTypes.INTEGER, allowNull: true },
+            departmentId: { type: DataTypes.INTEGER, allowNull: true }
+        },
+        Departments: {
+            schoolId: { type: DataTypes.INTEGER, allowNull: true }
+        },
+        Courses: {
+            schoolId: { type: DataTypes.INTEGER, allowNull: true }
+        }
+    })) {
+        if (!hasTable(tables, tableName)) continue;
+        const existing = await queryInterface.describeTable(tableName);
+        for (const [columnName, definition] of Object.entries(columns)) {
+            if (!Object.prototype.hasOwnProperty.call(existing, columnName)) {
+                await queryInterface.addColumn(tableName, columnName, definition);
+            }
+        }
+    }
+
+    const now = new Date();
+    for (const schoolData of academicCatalog) {
+        let [school] = await queryInterface.select(null, "Schools", {
+            where: { name: schoolData.name },
+            limit: 1
+        });
+        if (!school) {
+            await queryInterface.bulkInsert("Schools", [{
+                name: schoolData.name,
+                createdAt: now,
+                updatedAt: now
+            }]);
+            [school] = await queryInterface.select(null, "Schools", {
+                where: { name: schoolData.name },
+                limit: 1
+            });
+        }
+
+        for (const name of schoolData.departments) {
+            const [department] = await queryInterface.select(null, "Departments", {
+                where: { name },
+                limit: 1
+            });
+            if (department) {
+                await queryInterface.bulkUpdate("Departments", { schoolId: school.id, updatedAt: now }, { id: department.id });
+                if (hasTable(tables, "Courses")) {
+                    await queryInterface.bulkUpdate(
+                        "Courses",
+                        { schoolId: school.id, updatedAt: now },
+                        { departmentId: department.id, schoolId: null }
+                    );
+                }
+            } else {
+                await queryInterface.bulkInsert("Departments", [{
+                    name,
+                    description: null,
+                    schoolId: school.id,
+                    createdAt: now,
+                    updatedAt: now
+                }]);
+            }
+        }
+    }
+
+    const applied = await queryInterface.select(null, "SchemaMigrations", {
+        where: { name: academicCatalogMigrationName },
+        limit: 1
+    });
+    if (!applied.length) {
+        await queryInterface.bulkInsert("SchemaMigrations", [{
+            name: academicCatalogMigrationName,
+            appliedAt: now
+        }]);
+    }
+};
+
 const ensureIdentityIndexes = async () => {
     const tables = await getTables(sequelize.getQueryInterface());
     if (hasTable(tables, "Users")) {
@@ -380,6 +472,7 @@ module.exports = async () => {
             await applyAssignmentWorkTypeMigration(queryInterface);
             await applyLessonPrivateNotesMigration(queryInterface);
             await applyChatMessageDeliveryAndReactionsMigration(queryInterface);
+            await applyAcademicCatalogMigration(queryInterface);
             await ensureIdentityIndexes();
             return;
         }
@@ -390,6 +483,7 @@ module.exports = async () => {
             await applyAssignmentWorkTypeMigration(queryInterface);
             await applyLessonPrivateNotesMigration(queryInterface);
             await applyChatMessageDeliveryAndReactionsMigration(queryInterface);
+            await applyAcademicCatalogMigration(queryInterface);
             await ensureIdentityIndexes();
             return;
         }
@@ -1501,6 +1595,7 @@ module.exports = async () => {
     await applyAssignmentWorkTypeMigration(queryInterface);
     await applyLessonPrivateNotesMigration(queryInterface);
     await applyChatMessageDeliveryAndReactionsMigration(queryInterface);
+    await applyAcademicCatalogMigration(queryInterface);
     await ensureIdentityIndexes();
 };
 

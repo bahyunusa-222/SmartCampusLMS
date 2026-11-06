@@ -11,7 +11,7 @@ const Courses = ({ catalog = false }) => {
     const offlineRefresh = useOfflineRefresh();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
-    const { isStaff } = useAuth();
+    const { user, isStaff } = useAuth();
     const requestedCourseSection = ["materials", "students", "assignments", "quizzes", "grading", "calendar", "announcements"].includes(searchParams.get("section"))
         ? searchParams.get("section")
         : null;
@@ -28,7 +28,8 @@ const Courses = ({ catalog = false }) => {
     const [myCourses, setMyCourses] = useState([]);
     const [enrolledCourseIds, setEnrolledCourseIds] = useState([]);
     const [form, setForm] = useState({
-        title: "", description: "", classDays: [], classStartTime: "", classEndTime: ""
+        title: "", description: "", classDays: [], classStartTime: "", classEndTime: "",
+        allSchoolDepartments: true
     });
     const [search, setSearch] = useState("");
     const [courseStatusFilter, setCourseStatusFilter] = useState("all");
@@ -43,6 +44,7 @@ const Courses = ({ catalog = false }) => {
     const [isCreateOpen, setIsCreateOpen] = useState(() => isStaff && searchParams.get("create") === "1");
     const [creating, setCreating] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
+    const [catalogActionCourseId, setCatalogActionCourseId] = useState(null);
     const createAbortController = useRef(null);
     const creatingRef = useRef(false);
 
@@ -123,6 +125,13 @@ const Courses = ({ catalog = false }) => {
         payload.append("classStartTime", form.classStartTime);
         payload.append("classEndTime", form.classEndTime);
         payload.append("classTimeZone", Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+        if (!form.allSchoolDepartments) {
+            if (!user?.departmentId) {
+                setMsg("Your profile needs a department before you can limit course access.");
+                return;
+            }
+            payload.append("departmentId", String(user.departmentId));
+        }
 
         const controller = new AbortController();
         createAbortController.current = controller;
@@ -134,7 +143,7 @@ const Courses = ({ catalog = false }) => {
                 signal: controller.signal,
                 headers: { "Content-Type": "multipart/form-data" }
             });
-            setForm({ title: "", description: "", classDays: [], classStartTime: "", classEndTime: "" });
+            setForm({ title: "", description: "", classDays: [], classStartTime: "", classEndTime: "", allSchoolDepartments: true });
             setIsCreateOpen(false);
             setMsg("Course created successfully!");
             window.dispatchEvent(new Event("smartcampus:dashboard-refresh"));
@@ -161,11 +170,43 @@ const Courses = ({ catalog = false }) => {
         if (creating) {
             createAbortController.current?.abort();
             setIsCreateOpen(false);
-            setForm({ title: "", description: "", classDays: [], classStartTime: "", classEndTime: "" });
+            setForm({ title: "", description: "", classDays: [], classStartTime: "", classEndTime: "", allSchoolDepartments: true });
             return;
         }
         setIsCreateOpen(false);
-        setForm({ title: "", description: "", classDays: [], classStartTime: "", classEndTime: "" });
+        setForm({ title: "", description: "", classDays: [], classStartTime: "", classEndTime: "", allSchoolDepartments: true });
+    };
+
+    const joinCatalogCourse = async (course) => {
+        if (!window.confirm(`Join "${course.title}"?`)) return;
+        setCatalogActionCourseId(course.id);
+        setMsg("");
+        try {
+            await API.post(`/enrollments/courses/${course.id}/join`);
+            setEnrolledCourseIds((current) => current.includes(course.id) ? current : [...current, course.id]);
+            setMsg(`Joined ${course.title} successfully.`);
+            window.dispatchEvent(new Event("smartcampus:courses-refresh"));
+        } catch (error) {
+            setMsg(error.response?.data?.message || "Unable to join this course.");
+        } finally {
+            setCatalogActionCourseId(null);
+        }
+    };
+
+    const leaveCatalogCourse = async (course) => {
+        if (!window.confirm(`Leave "${course.title}"? Your existing course work will be preserved.`)) return;
+        setCatalogActionCourseId(course.id);
+        setMsg("");
+        try {
+            await API.delete(`/enrollments/${course.id}`);
+            setEnrolledCourseIds((current) => current.filter((id) => id !== course.id));
+            setMsg(`You have left ${course.title}.`);
+            window.dispatchEvent(new Event("smartcampus:courses-refresh"));
+        } catch (error) {
+            setMsg(error.response?.data?.message || "Unable to leave this course.");
+        } finally {
+            setCatalogActionCourseId(null);
+        }
     };
 
     const filteredLecturerCourses = myCourses.filter((course) =>
@@ -187,7 +228,7 @@ const Courses = ({ catalog = false }) => {
     if (catalog && !isStaff) {
         const normalizedSearch = search.trim().toLowerCase();
         const visibleCourses = myCourses.filter((course) => {
-            const matchesSearch = `${course.title} ${course.description} ${course.lecturer?.fullName || ""}`
+            const matchesSearch = `${course.title} ${course.description} ${course.academicCode || ""} ${course.department?.name || ""} ${course.lecturer?.fullName || ""}`
                 .toLowerCase()
                 .includes(normalizedSearch);
             const matchesFilter = catalogFilter === "all" || enrolledCourseIds.includes(course.id);
@@ -247,15 +288,32 @@ const Courses = ({ catalog = false }) => {
                                         <p className="catalog-lecturer">
                                             Lecturer: <strong>{course.lecturer?.fullName || "SmartCampus faculty"}</strong>
                                         </p>
-                                        <Link
-                                            to={isEnrolled
-                                                ? `/courses/${course.id}?section=${courseSection || (isStaff ? "manage" : "materials")}`
-                                                : "/join"}
-                                            className="catalog-link"
-                                        >
-                                            {isEnrolled ? "Open course" : "Join a class"}
-                                            <FaArrowRight aria-hidden="true" />
-                                        </Link>
+                                        {course.department?.name && <p className="catalog-lecturer">Department: {course.department.name}</p>}
+                                        {isEnrolled ? (
+                                            <>
+                                                <Link to={`/courses/${course.id}?section=materials`} className="catalog-link">
+                                                    Open course <FaArrowRight aria-hidden="true" />
+                                                </Link>
+                                                <button
+                                                    type="button"
+                                                    className="catalog-link"
+                                                    disabled={catalogActionCourseId === course.id}
+                                                    onClick={() => leaveCatalogCourse(course)}
+                                                >
+                                                    {catalogActionCourseId === course.id ? "Leaving…" : "Leave course"}
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                className="catalog-link"
+                                                disabled={catalogActionCourseId === course.id}
+                                                onClick={() => joinCatalogCourse(course)}
+                                            >
+                                                {catalogActionCourseId === course.id ? "Joining…" : "Join course"}
+                                                <FaArrowRight aria-hidden="true" />
+                                            </button>
+                                        )}
                                     </div>
                                 </article>
                             );
@@ -328,6 +386,18 @@ const Courses = ({ catalog = false }) => {
                                         maxLength={10000}
                                         placeholder="Describe what students will learn in this course"
                                     />
+                                </label>
+                                <label className="course-schoolwide-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={form.allSchoolDepartments}
+                                        onChange={(event) => setForm((current) => ({
+                                            ...current,
+                                            allSchoolDepartments: event.target.checked
+                                        }))}
+                                        disabled={creating}
+                                    />
+                                    Available to all departments in my school
                                 </label>
                                 <fieldset className="course-schedule-days">
                                     <legend>Class days</legend>
@@ -440,7 +510,10 @@ const Courses = ({ catalog = false }) => {
                     <p className="eyebrow">YOUR LEARNING SPACE</p>
                     <h1>{sectionDetails?.title || "My Courses"}</h1>
                 </div>
-                <Link to="/join" className="btn btn-inline"><FaPlus /> Join course</Link>
+                <div className="course-header-actions">
+                    <Link to="/catalog" className="btn btn-inline"><FaSearch /> Find courses</Link>
+                    <Link to="/join" className="btn btn-inline"><FaPlus /> Join by code</Link>
+                </div>
             </header>
 
             <section className="course-stat-grid" aria-label="Your learning statistics">

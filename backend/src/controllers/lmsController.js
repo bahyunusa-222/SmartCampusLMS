@@ -1135,16 +1135,22 @@ exports.updateCourseDepartment = async (req, res) => {
     if (!course) return res.status(404).json({ message: "Course not found" });
     const access = await managerAccess(course.id, req.user, res);
     if (!access) return;
+    const lecturer = await User.findByPk(req.user.id, { attributes: ["schoolId", "departmentId"] });
+    if (!lecturer?.schoolId || !lecturer.departmentId) {
+        return res.status(409).json({ message: "Complete your school and department profile before changing course availability." });
+    }
     const departmentId = req.body.departmentId;
     if (departmentId !== null && departmentId !== undefined) {
         const id = idValue(departmentId);
-        if (!id || !(await Department.findByPk(id))) {
+        if (!id || id !== lecturer.departmentId ||
+            !(await Department.findOne({ where: { id, schoolId: lecturer.schoolId } }))) {
             return res.status(400).json({ message: "Department not found" });
         }
         course.departmentId = id;
     } else {
         course.departmentId = null;
     }
+    course.schoolId = lecturer.schoolId;
     await course.save();
     res.json(course);
 };

@@ -19,6 +19,8 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
         confirmPassword: "",
         matNumber: "",
         phone: "",
+        schoolId: "",
+        departmentId: "",
         role: "student"
     });
     const [error, setError] = useState("");
@@ -27,6 +29,23 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
     const [registrationMethod, setRegistrationMethod] = useState("");
     const [googleCredential, setGoogleCredential] = useState("");
     const [verifiedAccount, setVerifiedAccount] = useState(null);
+    const [schools, setSchools] = useState([]);
+    const [catalogLoading, setCatalogLoading] = useState(true);
+
+    useEffect(() => {
+        let active = true;
+        API.get("/auth/academic-catalog", { skipOfflineCache: true })
+            .then((response) => {
+                if (active) setSchools(response.data);
+            })
+            .catch((catalogError) => {
+                if (active) setError(catalogError.response?.data?.message || "Unable to load schools and departments.");
+            })
+            .finally(() => {
+                if (active) setCatalogLoading(false);
+            });
+        return () => { active = false; };
+    }, []);
 
     useEffect(() => {
         if (!embedded) return undefined;
@@ -96,7 +115,9 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
         await completeRegistration(googleCredential, {
             fullName: formData.fullName,
             matNumber: formData.matNumber,
-            phone: formData.phone
+            phone: formData.phone,
+            schoolId: formData.schoolId,
+            departmentId: formData.departmentId
         });
     };
 
@@ -113,6 +134,8 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                 password: formData.password,
                 confirmPassword: formData.confirmPassword,
                 role: formData.role,
+                schoolId: formData.schoolId,
+                departmentId: formData.departmentId,
                 matNumber: formData.role === "student" ? formData.matNumber : undefined,
                 phone: formData.role === "student" ? formData.phone : undefined
             });
@@ -135,6 +158,41 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
         setError("");
         setMessage("");
     };
+
+    const selectedSchool = schools.find((school) => String(school.id) === formData.schoolId);
+    const academicFields = (
+        <>
+            <label>
+                School
+                <select
+                    value={formData.schoolId}
+                    onChange={(event) => setFormData((current) => ({
+                        ...current,
+                        schoolId: event.target.value,
+                        departmentId: ""
+                    }))}
+                    required
+                >
+                    <option value="">Select your school</option>
+                    {schools.map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}
+                </select>
+            </label>
+            <label>
+                Department / programme
+                <select
+                    value={formData.departmentId}
+                    onChange={(event) => setFormData((current) => ({ ...current, departmentId: event.target.value }))}
+                    required
+                    disabled={!selectedSchool}
+                >
+                    <option value="">Select your department</option>
+                    {(selectedSchool?.departments || []).map((department) => (
+                        <option key={department.id} value={department.id}>{department.name}</option>
+                    ))}
+                </select>
+            </label>
+        </>
+    );
 
     const formCard = (
         <section
@@ -172,7 +230,9 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                             ...current,
                             role: event.target.value,
                             matNumber: "",
-                            phone: ""
+                            phone: "",
+                            schoolId: "",
+                            departmentId: ""
                         }));
                         setError("");
                         setMessage("");
@@ -188,7 +248,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                     <p className="google-signin-copy">
                         Sign up as a {formData.role} using your email and password, or continue with Google.
                     </p>
-                    <button className="btn register-submit" type="button" onClick={() => changeSignupMethod("email")}>
+                    <button className="btn register-submit" type="button" onClick={() => changeSignupMethod("email")} disabled={catalogLoading || !schools.length}>
                         Sign up with email
                     </button>
                     <div className="auth-divider"><span>or</span>                    </div>
@@ -199,6 +259,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                         }}
                         onError={setError}
                     />
+                    {catalogLoading && <p role="status">Loading schools and departments…</p>}
                     {loading && <p className="google-signin-loading" role="status">Verifying your Google account…</p>}
                 </div>
             )}
@@ -255,6 +316,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                                 </label>
                             </>
                         )}
+                        {academicFields}
                         <label>
                             Email address
                             <input
@@ -301,7 +363,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                                 required
                             />
                         </label>
-                        <button className="btn register-submit" type="submit" disabled={loading}>
+                        <button className="btn register-submit" type="submit" disabled={loading || catalogLoading || !schools.length}>
                             {loading ? "Creating account…" : "Create account"}
                         </button>
                     </form>
@@ -311,7 +373,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                 </>
             )}
 
-            {googleCredential && verifiedAccount && formData.role === "student" && (
+            {googleCredential && verifiedAccount && (
                 <>
                     <form className="register-form" onSubmit={handleSubmit}>
                         <label className="verified-email">
@@ -332,39 +394,45 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                                 minLength={2}
                                 maxLength={255}
                                 required
+                                readOnly={formData.role === "lecturer"}
                             />
                         </label>
-                        <label>
-                            Student ID / matriculation number
-                            <input
-                                type="text"
-                                name="matNumber"
-                                autoComplete="off"
-                                value={formData.matNumber}
-                                onChange={(event) => setFormData((current) => ({
-                                    ...current,
-                                    matNumber: event.target.value
-                                }))}
-                                maxLength={50}
-                                required
-                            />
-                        </label>
-                        <label>
-                            Phone number <span className="register-optional">(optional)</span>
-                            <input
-                                type="tel"
-                                name="phone"
-                                autoComplete="tel"
-                                value={formData.phone}
-                                onChange={(event) => setFormData((current) => ({
-                                    ...current,
-                                    phone: event.target.value
-                                }))}
-                                maxLength={30}
-                            />
-                        </label>
-                        <button className="btn register-submit" type="submit" disabled={loading}>
-                            {loading ? "Creating account…" : "Complete student registration"}
+                        {formData.role === "student" && (
+                            <>
+                                <label>
+                                    Student ID / matriculation number
+                                    <input
+                                        type="text"
+                                        name="matNumber"
+                                        autoComplete="off"
+                                        value={formData.matNumber}
+                                        onChange={(event) => setFormData((current) => ({
+                                            ...current,
+                                            matNumber: event.target.value
+                                        }))}
+                                        maxLength={50}
+                                        required
+                                    />
+                                </label>
+                                <label>
+                                    Phone number <span className="register-optional">(optional)</span>
+                                    <input
+                                        type="tel"
+                                        name="phone"
+                                        autoComplete="tel"
+                                        value={formData.phone}
+                                        onChange={(event) => setFormData((current) => ({
+                                            ...current,
+                                            phone: event.target.value
+                                        }))}
+                                        maxLength={30}
+                                    />
+                                </label>
+                            </>
+                        )}
+                        {academicFields}
+                        <button className="btn register-submit" type="submit" disabled={loading || catalogLoading || !schools.length}>
+                            {loading ? "Creating account…" : `Complete ${formData.role} registration`}
                         </button>
                     </form>
                     <button className="register-method-back" type="button" onClick={() => changeSignupMethod("")}>

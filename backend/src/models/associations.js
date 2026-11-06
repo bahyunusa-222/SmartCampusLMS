@@ -23,6 +23,7 @@ const Message = require("./Message");
 const Notification = require("./Notification");
 const CalendarEvent = require("./CalendarEvent");
 const Department = require("./Department");
+const School = require("./School");
 const Certificate = require("./Certificate");
 const Feedback = require("./Feedback");
 const DeadlineReminder = require("./DeadlineReminder");
@@ -102,6 +103,11 @@ QuizResult.belongsTo(Quiz, { foreignKey: "quizId", as: "quiz" });
 
 Course.belongsTo(Department, { foreignKey: "departmentId", as: "department" });
 Department.hasMany(Course, { foreignKey: "departmentId", as: "courses" });
+School.hasMany(Department, { foreignKey: "schoolId", as: "departments" });
+Department.belongsTo(School, { foreignKey: "schoolId", as: "school" });
+User.belongsTo(School, { foreignKey: "schoolId", as: "school" });
+User.belongsTo(Department, { foreignKey: "departmentId", as: "department" });
+Course.belongsTo(School, { foreignKey: "schoolId", as: "school" });
 Course.hasMany(Announcement, { foreignKey: "courseId", as: "announcements" });
 Announcement.belongsTo(Course, { foreignKey: "courseId", as: "course" });
 Announcement.belongsTo(User, { foreignKey: "createdById", as: "author" });
@@ -186,6 +192,7 @@ module.exports = {
     Notification,
     CalendarEvent,
     Department,
+    School,
     Certificate,
     Feedback,
     DeadlineReminder,

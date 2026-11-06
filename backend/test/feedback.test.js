@@ -11,10 +11,16 @@ const emailService = require("../src/utils/emailService");
 
 const originalCreate = Feedback.create;
 const originalSendAppEmail = emailService.sendAppEmail;
+const originalFeedbackRecipient = process.env.FEEDBACK_RECIPIENT_EMAIL;
+const originalCollaborationRecipient = process.env.COLLABORATION_RECIPIENT_EMAIL;
 
 afterEach(() => {
     Feedback.create = originalCreate;
     emailService.sendAppEmail = originalSendAppEmail;
+    if (originalFeedbackRecipient === undefined) delete process.env.FEEDBACK_RECIPIENT_EMAIL;
+    else process.env.FEEDBACK_RECIPIENT_EMAIL = originalFeedbackRecipient;
+    if (originalCollaborationRecipient === undefined) delete process.env.COLLABORATION_RECIPIENT_EMAIL;
+    else process.env.COLLABORATION_RECIPIENT_EMAIL = originalCollaborationRecipient;
 });
 
 const responseFor = () => ({
@@ -31,6 +37,7 @@ const responseFor = () => ({
 });
 
 test("product feedback emails the personal recipient and stores the rating and required message", async () => {
+    process.env.FEEDBACK_RECIPIENT_EMAIL = "feedback@example.com";
     let saved = null;
     let email = null;
     Feedback.create = async (values) => { saved = values; };
@@ -43,7 +50,7 @@ test("product feedback emails the personal recipient and stores the rating and r
     }, response);
 
     assert.equal(response.statusCode, 201);
-    assert.equal(email.to, "bahy1878@gmail.com");
+    assert.equal(email.to, "feedback@example.com");
     assert.match(email.subject, /4\/5 stars/);
     assert.match(email.text, /Good experience/);
     assert.deepEqual(saved, {
@@ -158,6 +165,7 @@ test("email configuration errors identify missing setting names without exposing
 });
 
 test("collaboration messages go to the school email and include reply details", async () => {
+    process.env.COLLABORATION_RECIPIENT_EMAIL = "collaboration@example.com";
     let email = null;
     emailService.sendAppEmail = async (values) => { email = values; };
     const response = responseFor();
@@ -167,7 +175,7 @@ test("collaboration messages go to the school email and include reply details", 
     }, response);
 
     assert.equal(response.statusCode, 201);
-    assert.equal(email.to, "yb22423255@utg.edu.gm");
+    assert.equal(email.to, "collaboration@example.com");
     assert.equal(email.replyTo, "sender@example.com");
     assert.match(email.text, /Let's collaborate\./);
 });

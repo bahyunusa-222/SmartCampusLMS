@@ -3,6 +3,9 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const User = require("../models/User");
+const Course = require("../models/Course");
+const School = require("../models/School");
+const Department = require("../models/Department");
 const sanitizeUser = require("../utils/sanitizeUser");
 const { isValidJwtSecret } = require("../utils/authConfiguration");
 const {
@@ -16,6 +19,23 @@ const {
 require("../config/env");
 
 const passwordRecoveryMessage = "If an eligible account exists, recovery instructions will be sent.";
+
+const getAcademicPlacement = async (schoolId, departmentId) => {
+    const parsedSchoolId = Number(schoolId);
+    const parsedDepartmentId = Number(departmentId);
+    if (!Number.isSafeInteger(parsedSchoolId) || parsedSchoolId <= 0 ||
+        !Number.isSafeInteger(parsedDepartmentId) || parsedDepartmentId <= 0) {
+        return { error: "Choose your school and department.", status: 400 };
+    }
+
+    const school = await School.findByPk(parsedSchoolId);
+    if (!school) return { error: "Choose a valid school.", status: 400 };
+    const department = await Department.findOne({
+        where: { id: parsedDepartmentId, schoolId: parsedSchoolId }
+    });
+    if (!department) return { error: "Choose a department in your selected school.", status: 400 };
+    return { schoolId: school.id, departmentId: department.id };
+};
 
 exports.getAuthConfig = (req, res) => {
     res.set("Cache-Control", "no-store");
@@ -163,7 +183,7 @@ const verifyGoogleCredential = async (credential) => {
 
 exports.register = async (req, res) => {
     try {
-        const { fullName, email, password, confirmPassword, role, matNumber, phone } = req.body;
+        const { fullName, email, password, confirmPassword, role, matNumber, phone, schoolId, departmentId } = req.body;
         const normalizedName = normalizeName(fullName);
         const normalizedEmail = normalizeEmail(email);
         if (!normalizedName || !normalizedEmail || !validatePassword(password) ||
@@ -189,6 +209,9 @@ exports.register = async (req, res) => {
             }
         }
 
+        const placement = await getAcademicPlacement(schoolId, departmentId);
+        if (placement.error) return res.status(placement.status).json({ message: placement.error });
+
         const existingUser = await User.findOne({ where: { email: normalizedEmail } });
         if (existingUser) {
             return res.status(409).json({ message: "An account with this email already exists" });
@@ -201,6 +224,8 @@ exports.register = async (req, res) => {
             password: hashedPassword,
             passwordLoginEnabled: true,
             role,
+            schoolId: placement.schoolId,
+            departmentId: placement.departmentId,
             matNumber: role === "student" ? normalizedMatNumber : null,
             phone: role === "student" ? normalizedPhone : null
         });
@@ -217,7 +242,7 @@ exports.register = async (req, res) => {
 
 exports.googleRegister = async (req, res) => {
     try {
-        const { credential, role, fullName, matNumber, phone } = req.body;
+        const { credential, role, fullName, matNumber, phone, schoolId, departmentId } = req.body;
         if (!["student", "lecturer"].includes(role)) {
             return res.status(400).json({ message: "Choose a valid account type" });
         }
@@ -229,21 +254,34 @@ exports.googleRegister = async (req, res) => {
 
         const existingUser = await User.findOne({ where: { email: googleAccount.email } });
         if (existingUser) {
-            return res.status(409).json({ message: "An account with this email already exists" });
+            if (existingUser.googleId && existingUser.googleId !== googleAccount.googleId) {
+                return res.status(401).json({ message: "This Google account could not be verified for the existing profile." });
+            }
+            if (!existingUser.googleId) {
+                existingUser.googleId = googleAccount.googleId;
+                await existingUser.save();
+            }
+            return issueSession(existingUser, res);
         }
 
         const normalizedName = role === "student" ? normalizeName(fullName) : googleAccount.fullName;
-        if (role === "student" && !normalizedName) {
+        const hasStudentId = role !== "student" || Boolean(normalizeStudentId(matNumber));
+        if (!normalizedName || !schoolId || !departmentId || !hasStudentId) {
             return res.status(428).json({
-                message: "Add your student details to finish creating your account.",
+                message: "Add your school and department details to finish creating your account.",
                 profileRequired: true,
                 profile: { email: googleAccount.email, fullName: googleAccount.fullName }
             });
         }
-        if (!normalizedName) {
-            return res.status(400).json({ message: "Enter your full name" });
-        }
 
+        const placement = await getAcademicPlacement(schoolId, departmentId);
+        if (placement.error) {
+            return res.status(428).json({
+                message: placement.error,
+                profileRequired: true,
+                profile: { email: googleAccount.email, fullName: googleAccount.fullName }
+            });
+        }
         let normalizedMatNumber = null;
         let normalizedPhone = null;
         if (role === "student") {
@@ -265,6 +303,8 @@ exports.googleRegister = async (req, res) => {
             passwordLoginEnabled: false,
             password: hashedPassword,
             role,
+            schoolId: placement.schoolId,
+            departmentId: placement.departmentId,
             matNumber: role === "student" ? normalizedMatNumber : null,
             phone: role === "student" ? normalizedPhone : null
         });
@@ -461,7 +501,7 @@ exports.logout = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     try {
-        const { fullName, email, matNumber, phone } = req.body;
+        const { fullName, email, matNumber, phone, schoolId, departmentId } = req.body;
         const normalizedName = normalizeName(fullName);
         const normalizedEmail = normalizeEmail(email);
         if (!normalizedName || !normalizedEmail) {
@@ -488,12 +528,22 @@ exports.updateProfile = async (req, res) => {
             });
         }
 
+        let placement;
+        if (schoolId !== undefined || departmentId !== undefined) {
+            placement = await getAcademicPlacement(schoolId, departmentId);
+            if (placement.error) return res.status(placement.status).json({ message: placement.error });
+        }
+
         user.fullName = normalizedName;
         if (normalizedEmail !== user.email) {
             user.passwordResetTokenHash = null;
             user.passwordResetExpiresAt = null;
         }
         user.email = normalizedEmail;
+        if (placement) {
+            user.schoolId = placement.schoolId;
+            user.departmentId = placement.departmentId;
+        }
         if (user.role === "student") {
             const normalizedMatNumber = normalizeStudentId(matNumber);
             const phoneProvided = phone !== undefined && phone !== null && phone !== "";
@@ -507,6 +557,12 @@ exports.updateProfile = async (req, res) => {
             user.phone = normalizedPhone;
         }
         await user.save();
+        if (placement && user.role === "lecturer") {
+            await Course.update(
+                { schoolId: placement.schoolId },
+                { where: { lecturerId: user.id, schoolId: null, departmentId: null } }
+            );
+        }
 
         return res.json({
             message: "Profile updated successfully",

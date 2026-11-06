@@ -93,11 +93,11 @@ the same services.
 | `SUPABASE_STORAGE_BUCKET` | Private Storage bucket name; use `smartcampus-files` |
 | `VITE_SUPABASE_URL` | Public Supabase project URL for browser chat Realtime |
 | `VITE_SUPABASE_ANON_KEY` | Public Supabase anon/publishable key for browser chat Realtime |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | Optional SMTP delivery for feedback and collaboration emails |
-| `FEEDBACK_RECIPIENT_EMAIL`, `COLLABORATION_RECIPIENT_EMAIL` | Optional destinations for those emails |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | Required SMTP settings for feedback and collaboration email delivery |
+| `FEEDBACK_RECIPIENT_EMAIL`, `COLLABORATION_RECIPIENT_EMAIL` | Required private recipient addresses for feedback and collaboration messages |
 | `OPENAI_API_KEY` | Optional; only needed for the AI assistant |
 | `VITE_ENABLE_AI_ASSISTANT` | Set to `true` to show the AI assistant button; leave `false` until `OPENAI_API_KEY` is configured |
-| `TENOR_API_KEY` | Optional; only needed for chat GIF/sticker search |
+| `TENOR_API_KEY` | Required for chat GIF/sticker search |
 
 `PORT` is managed by Vercel and is not required. Do not set `VITE_API_URL` for
 this same-origin deployment. Redeploy after changing frontend environment
