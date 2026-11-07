@@ -121,27 +121,25 @@ const Navbar = ({ toggle, theme, toggleTheme }) => {
         : fullName;
     const showNavbarWelcome = location.pathname !== "/dashboard" && Boolean(displayName);
 
-    const handleLogout = async () => {
-        let logoutMessage = "Logged out successfully.";
-        try {
-            await API.post("/auth/logout");
-        } catch (error) {
-            logoutMessage = error.response?.data?.message
-                ? "Logged out on this device. Server session revocation failed."
-                : "Logged out on this device. Server session revocation could not be confirmed.";
-        } finally {
-            if (user?.id != null) {
-                try {
-                    await clearOfflineResponsesForAccount(String(user.id));
-                } catch (error) {
-                    console.error("Could not clear this account's offline data:", error);
-                    logoutMessage = "Logged out, but saved offline data could not be removed from this device.";
-                }
-            }
-            localStorage.removeItem("token");
-            localStorage.removeItem("user");
-            window.dispatchEvent(new Event("smartcampus:account-changed"));
-            navigate("/login", { replace: true, state: { message: logoutMessage } });
+    const handleLogout = () => {
+        const token = localStorage.getItem("token");
+        const userId = user?.id;
+        if (token) {
+            API.post("/auth/logout", {}, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 10000
+            }).catch((error) => {
+                console.warn("Server-side logout could not be confirmed:", error.response?.data?.message || error.message);
+            });
+        }
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.dispatchEvent(new Event("smartcampus:account-changed"));
+        navigate("/login", { replace: true, state: { message: "Logged out successfully." } });
+        if (userId != null) {
+            clearOfflineResponsesForAccount(String(userId)).catch((error) => {
+                console.error("Could not clear this account's offline data:", error);
+            });
         }
     };
 

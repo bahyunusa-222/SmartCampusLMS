@@ -4,6 +4,7 @@ import {
     FaBookmark,
     FaCheck,
     FaCheckDouble,
+    FaClock,
     FaCommentDots,
     FaCopy,
     FaDownload,
@@ -23,8 +24,7 @@ import {
     FaTimes,
     FaTrash,
     FaAddressCard,
-    FaUserCircle,
-    FaUserPlus
+    FaUserCircle
 } from "react-icons/fa";
 import API from "../services/api";
 import { appendUploadedFile } from "../services/fileUploads";
@@ -34,6 +34,7 @@ import {
     readOfflineChatMessages,
     removeOfflineChatMessage
 } from "../services/offlineCache";
+import DraggableChatButton from "./DraggableChatButton";
 
 const formatTime = (date) => new Date(date).toLocaleTimeString([], {
     hour: "2-digit",
@@ -56,6 +57,8 @@ const messagePreview = (message) => {
 };
 
 const isNetworkFailure = (error) => !error?.response;
+const canAccessChat = (user) => user?.role === "student" ||
+    user?.email?.trim().toLowerCase() === "bahy1878@gmail.com";
 
 const requestErrorMessage = (error, fallback) => {
     if (error?.response?.data?.message) return error.response.data.message;
@@ -66,7 +69,7 @@ const requestErrorMessage = (error, fallback) => {
 const serviceErrorMessage = (error, fallback) => {
     if (error?.response?.data?.message) return error.response.data.message;
     if (!navigator.onLine) return "You are offline. Reconnect and try again.";
-    if (!error?.response) return "The network request failed. Check your connection and try again.";
+    if (!error?.response) return "SmartCampus could not be reached. Check your connection and try again.";
     if (error.response.status >= 500) return `The server could not complete this request (HTTP ${error.response.status}).`;
     return fallback;
 };
@@ -101,9 +104,19 @@ const readFavoriteChatKeys = (userId) => {
     }
 };
 
+const readFavoriteMedia = (userId) => {
+    if (userId == null) return [];
+    try {
+        const stored = JSON.parse(localStorage.getItem(`smartcampus:chat-media-favorites:${userId}`) || "[]");
+        return Array.isArray(stored) ? stored.filter((item) => item && typeof item.url === "string") : [];
+    } catch {
+        return [];
+    }
+};
+
 const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     const [user, setUser] = useState(getUser);
-    const canUseChat = user?.role === "student";
+    const canUseChat = canAccessChat(user);
     const [open, setOpen] = useState(initialOpen);
     const [chatLoaded, setChatLoaded] = useState(false);
     const [profile, setProfile] = useState(null);
@@ -111,6 +124,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     const [coursemates, setCoursemates] = useState([]);
     const [coursematesLoading, setCoursematesLoading] = useState(false);
     const [privateChats, setPrivateChats] = useState([]);
+    const [developerProfile, setDeveloperProfile] = useState(null);
     const [chatFolder, setChatFolder] = useState("all");
     const [favoriteChatKeys, setFavoriteChatKeys] = useState(() => readFavoriteChatKeys(getUser()?.id));
     const [favoriteSelection, setFavoriteSelection] = useState([]);
@@ -162,6 +176,8 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     const [showMediaPicker, setShowMediaPicker] = useState(false);
     const [showAttachments, setShowAttachments] = useState(false);
     const [mediaType, setMediaType] = useState("gif");
+    const [favoriteMedia, setFavoriteMedia] = useState(() => readFavoriteMedia(getUser()?.id));
+    const [mediaViewer, setMediaViewer] = useState(null);
     const [replyTo, setReplyTo] = useState(null);
     const [contextMessage, setContextMessage] = useState(null);
     const [mentionChoices, setMentionChoices] = useState([]);
@@ -175,7 +191,6 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     const [recording, setRecording] = useState(false);
     const [recordingSeconds, setRecordingSeconds] = useState(0);
     const [mediaSources, setMediaSources] = useState({});
-    const [realtimeMode, setRealtimeMode] = useState("server");
     const [shareAnnouncement, setShareAnnouncement] = useState(initialShare);
     const [shareError, setShareError] = useState("");
     const scrollRef = useRef(null);
@@ -219,8 +234,10 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             setCourses([]);
             setCoursemates([]);
             setPrivateChats([]);
+            setDeveloperProfile(null);
             setChatFolder("all");
             setFavoriteChatKeys(readFavoriteChatKeys(getUser()?.id));
+            setFavoriteMedia(readFavoriteMedia(getUser()?.id));
             setFavoriteStorageError("");
             setActiveChat(null);
             setMessages([]);
@@ -254,6 +271,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             current?.avatarUrl === response.data.profile?.avatarUrl
             ? current
             : response.data.profile);
+        setDeveloperProfile(response.data.developerProfile || null);
         setChatLoaded(true);
         setCourses(response.data.courses || []);
         setPrivateChats(response.data.privateChats || []);
@@ -275,6 +293,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     current?.avatarUrl === response.data.profile?.avatarUrl
                     ? current
                     : response.data.profile);
+                setDeveloperProfile(response.data.developerProfile || null);
                 setCourses(response.data.courses || []);
                 setPrivateChats(response.data.privateChats || []);
                 setUnreadCount(
@@ -352,7 +371,6 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             voiceSourcesRef.current[pending.id] = source;
             setMediaSources((current) => ({ ...current, [pending.id]: source }));
         }
-        setError("Saved on this device; will send automatically when you reconnect.");
         return queued;
     };
 
@@ -383,6 +401,16 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     }
                     await removeOfflineChatMessage(queued.id);
                     deliveredAny = true;
+                    const localMediaUrl = voiceSourcesRef.current[queued.id];
+                    if (localMediaUrl && response.data.id !== queued.id) {
+                        delete voiceSourcesRef.current[queued.id];
+                        voiceSourcesRef.current[response.data.id] = localMediaUrl;
+                        setMediaSources((current) => {
+                            const next = { ...current, [response.data.id]: localMediaUrl };
+                            delete next[queued.id];
+                            return next;
+                        });
+                    }
                     const chat = currentChatRef.current;
                     if (chat?.key === queued.chatKey) {
                         setMessages((current) => [
@@ -393,10 +421,20 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                 } catch (requestError) {
                     if (isNetworkFailure(requestError) || requestError.response?.status >= 500) {
                         setError(requestError.response?.data?.message ||
-                            "Messages are still queued and will retry when the connection is available.");
+                            "SmartCampus is temporarily unavailable. Your message is saved and will retry automatically.");
                         break;
                     }
                     await removeOfflineChatMessage(queued.id);
+                    const failedMediaUrl = voiceSourcesRef.current[queued.id];
+                    if (failedMediaUrl) {
+                        URL.revokeObjectURL(failedMediaUrl);
+                        delete voiceSourcesRef.current[queued.id];
+                        setMediaSources((current) => {
+                            const next = { ...current };
+                            delete next[queued.id];
+                            return next;
+                        });
+                    }
                     const chat = currentChatRef.current;
                     if (chat?.key === queued.chatKey) {
                         setMessages((current) => current.filter((message) => message.id !== queued.id));
@@ -578,7 +616,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     }
                 } catch (requestError) {
                     if (controller.signal.aborted) break;
-                    setError(requestError.message || "Chat connection was interrupted.");
+                    setError(serviceErrorMessage(requestError, "Chat connection was interrupted. Reconnecting…"));
                     await pause(retryDelay);
                     retryDelay = Math.min(retryDelay * 2, 10000);
                 }
@@ -595,8 +633,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
         if (!profile || !supabaseUrl || !anonKey) {
             supabaseRealtimeActiveRef.current = false;
-            const fallbackTimer = window.setTimeout(() => setRealtimeMode("server"), 0);
-            return () => window.clearTimeout(fallbackTimer);
+            return undefined;
         }
         let cancelled = false;
         let client;
@@ -657,7 +694,6 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     .subscribe((status) => {
                         const connected = status === "SUBSCRIBED";
                         supabaseRealtimeActiveRef.current = connected;
-                        setRealtimeMode(connected ? "supabase" : "server");
                     });
                 tokenRefresh = window.setInterval(async () => {
                     try {
@@ -665,14 +701,12 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                         await client.realtime.setAuth(response.data.token);
                     } catch (requestError) {
                         supabaseRealtimeActiveRef.current = false;
-                        setRealtimeMode("server");
                         setError(serviceErrorMessage(requestError, "Unable to refresh the live chat connection."));
                     }
                 }, 8 * 60 * 1000);
             } catch (requestError) {
                 supabaseRealtimeActiveRef.current = false;
-                setRealtimeMode("server");
-                console.warn("Supabase Realtime is unavailable; using the authenticated server stream.", requestError.message);
+                console.warn("Optimized live updates are unavailable; using the standard chat connection.", requestError.message);
             }
         };
         startRealtime();
@@ -1095,67 +1129,23 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         setSending(true);
         setError("");
         setShowAttachments(false);
-        let sentCount = 0;
         try {
-            for (const [index, file] of attachments.entries()) {
+            for (const file of attachments) {
                 const payload = {
                     courseId: activeChat.type === "course" ? Number(activeChat.id) : null,
                     receiverProfileId: activeChat.type === "private" ? activeChat.id : null,
                     type,
                     content: file.name,
                     ...(mediaGroupId ? { mediaGroupId } : {}),
-                    ...(replyTo ? { replyTo: replyTo.id } : {})
+                    ...(replyTo ? { replyTo: replyTo.id } : {}),
+                    clientMessageId: crypto.randomUUID()
                 };
-                if (!navigator.onLine) {
-                    for (const queuedFile of attachments.slice(index)) {
-                        await queueChatMessage({
-                            ...payload,
-                            clientMessageId: crypto.randomUUID(),
-                            content: queuedFile.name
-                        }, { files: [queuedFile], mediaGroupId });
-                    }
-                    return;
-                }
-                const formData = new FormData();
-                const clientMessageId = crypto.randomUUID();
-                Object.entries({ ...payload, clientMessageId }).forEach(([key, value]) => {
-                    if (value != null) formData.append(key, String(value));
-                });
-                try {
-                    await appendUploadedFile(formData, file, {
-                        purpose: "chat-media",
-                        mediaType: type
-                    });
-                    const response = await API.post("/chat/messages", formData, {
-                        headers: { "Content-Type": "multipart/form-data" }
-                    });
-                    sentCount += 1;
-                    setMessages((current) => [...current.filter((item) => item.id !== response.data.id), response.data]);
-                } catch (requestError) {
-                    if (!isNetworkFailure(requestError)) throw requestError;
-                    await queueChatMessage({
-                        ...payload,
-                        clientMessageId
-                    }, { files: [file], mediaGroupId });
-                    for (const queuedFile of attachments.slice(index + 1)) {
-                        await queueChatMessage({
-                            ...payload,
-                            clientMessageId: crypto.randomUUID(),
-                            content: queuedFile.name
-                        }, { files: [queuedFile], mediaGroupId });
-                    }
-                    return;
-                }
+                await queueChatMessage(payload, { files: [file], mediaGroupId });
             }
             setReplyTo(null);
-            refresh().catch((requestError) => {
-                setError(requestError.response?.data?.message || "Attachment sent, but the chat list could not refresh.");
-            });
+            if (navigator.onLine) flushChatOutbox();
         } catch (requestError) {
-            const reason = requestErrorMessage(requestError, "Unable to send this attachment.");
-            setError(sentCount
-                ? `${sentCount} of ${attachments.length} files sent. ${reason}`
-                : reason);
+            setError(requestError.message || "Unable to save this attachment for delivery.");
         } finally {
             setSending(false);
         }
@@ -1213,30 +1203,15 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             clientMessageId: crypto.randomUUID()
         };
         try {
-            const response = await API.post("/chat/messages", payload);
-            setMessages((current) => [...current.filter((item) => item.id !== response.data.id), response.data]);
+            await queueChatMessage(payload);
             setDraft("");
             setReplyTo(null);
             setShowMediaPicker(false);
             setMediaResults([]);
             setMentionChoices([]);
-            refresh().catch((requestError) => {
-                setError(requestError.response?.data?.message || "Message sent, but the chat list could not refresh.");
-            });
+            if (navigator.onLine) flushChatOutbox();
         } catch (requestError) {
-            if (isNetworkFailure(requestError)) {
-                try {
-                    await queueChatMessage(payload);
-                    if (!media) setDraft("");
-                    setReplyTo(null);
-                    setMediaResults([]);
-                    setMentionChoices([]);
-                } catch (queueError) {
-                    setError(queueError.message || "Unable to save this message for delivery.");
-                }
-            } else {
-                setError(requestErrorMessage(requestError, "Unable to send message."));
-            }
+            setError(requestError.message || "Unable to save this message for delivery.");
         } finally {
             setSending(false);
         }
@@ -1296,6 +1271,18 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         }
     };
 
+    const toggleFavoriteMedia = (item) => {
+        const next = favoriteMedia.some((favorite) => favorite.url === item.url)
+            ? favoriteMedia.filter((favorite) => favorite.url !== item.url)
+            : [{ url: item.url, previewUrl: item.previewUrl || item.url, title: item.title || "", type: item.type || mediaType }, ...favoriteMedia];
+        setFavoriteMedia(next);
+        try {
+            localStorage.setItem(`smartcampus:chat-media-favorites:${user.id}`, JSON.stringify(next));
+        } catch {
+            setError("Favorites could not be saved on this device.");
+        }
+    };
+
     const downloadMessageMedia = async (message) => {
         try {
             const response = await API.get(`/chat/messages/${message.id}/media`, {
@@ -1315,23 +1302,36 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         }
     };
 
-    const searchMedia = async (event) => {
-        event.preventDefault();
-        if (mediaQuery.trim().length < 2) return;
-        setMediaSearching(true);
-        setError("");
-        try {
-            const response = await API.get("/chat/media/search", {
-                params: { q: mediaQuery.trim(), type: mediaType },
-                skipOfflineCache: true
-            });
-            setMediaResults(response.data.results || []);
-        } catch (requestError) {
-            setError(serviceErrorMessage(requestError, "Unable to search GIFs."));
-        } finally {
-            setMediaSearching(false);
-        }
-    };
+    const visibleMediaResults = mediaType === "favorites"
+        ? favoriteMedia.filter((item) =>
+            !mediaQuery.trim() || `${item.title || ""} ${item.type || ""}`.toLowerCase().includes(mediaQuery.trim().toLowerCase())
+        )
+        : mediaQuery.trim().length >= 2 ? mediaResults : [];
+
+    useEffect(() => {
+        if (!showMediaPicker) return undefined;
+        const query = mediaQuery.trim();
+        if (mediaType === "favorites" || query.length < 2) return undefined;
+        let active = true;
+        const timer = window.setTimeout(async () => {
+            setMediaSearching(true);
+            try {
+                const response = await API.get("/chat/media/search", {
+                    params: { q: query, type: mediaType },
+                    skipOfflineCache: true
+                });
+                if (active) setMediaResults(response.data.results || []);
+            } catch (requestError) {
+                if (active) setError(serviceErrorMessage(requestError, "Unable to search GIFs."));
+            } finally {
+                if (active) setMediaSearching(false);
+            }
+        }, 300);
+        return () => {
+            active = false;
+            window.clearTimeout(timer);
+        };
+    }, [mediaQuery, mediaType, showMediaPicker]);
 
     const uploadVoiceNote = async (blob) => {
         const formData = new FormData();
@@ -1450,8 +1450,9 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         `${chat.profile.fullName} ${chat.profile.username}`.toLowerCase().includes(search.trim().toLowerCase())
     ), [privateChats, search]);
     const matchingCoursemates = useMemo(() => coursemates.filter((member) =>
+        member.id !== developerProfile?.id &&
         `${member.fullName} ${member.username}`.toLowerCase().includes(query.trim().toLowerCase())
-    ), [coursemates, query]);
+    ), [coursemates, developerProfile?.id, query]);
     const usernameSearchIsCoursemate = usernameSearchProfile
         && coursemates.some((member) => member.id === usernameSearchProfile.id);
     const visibleChats = useMemo(() => {
@@ -1581,11 +1582,11 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
 
     return (
         <>
-            <button
-                type="button"
+            <DraggableChatButton
                 className={`floating-chat-launcher${open ? " is-open" : ""}`}
                 aria-label={open ? "Close chats" : `Open chats${unreadCount ? `, ${unreadCount} unread` : ""}`}
                 aria-expanded={open}
+                title="Drag to move, or tap to toggle chats"
                 onClick={() => {
                     if (open) closeChat();
                     else setOpen(true);
@@ -1593,7 +1594,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             >
                 {open ? <FaTimes aria-hidden="true" /> : <FaCommentDots aria-hidden="true" />}
                 {unreadCount > 0 && <span className="floating-chat-badge">{unreadCount > 99 ? "99+" : unreadCount}</span>}
-            </button>
+            </DraggableChatButton>
 
             {open && (
                 <section className="floating-chat-window" aria-label="SmartCampus chats">
@@ -1601,7 +1602,9 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                         <FaTimes aria-hidden="true" />
                     </button>
                     {!chatLoaded ? (
-                        <div className="wa-empty" role="status">Loading your chats...</div>
+                        <div className="wa-chat-skeleton" role="status" aria-label="Loading your chats">
+                            <span /><span /><span />
+                        </div>
                     ) : !profile ? (
                         <form className="chat-profile-modal" onSubmit={saveUsername}>
                             <span className="chat-profile-icon">{avatarUrl
@@ -1858,25 +1861,54 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     <FaSearch aria-hidden="true" />
                                     <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search: courses, usernames" aria-label="Search courses or usernames" />
                                 </label>
-                                <button type="button" className="wa-new-chat" onClick={openCoursemates}>
-                                    <FaUserPlus aria-hidden="true" /> New chat
+                                <button
+                                    type="button"
+                                    className="wa-new-chat"
+                                    aria-label="Add a chat"
+                                    title="Add a chat"
+                                    onClick={openCoursemates}
+                                >
+                                    <FaPlus aria-hidden="true" />
                                 </button>
                                 {chatFolder === "favorites" && (
                                     <button
                                         type="button"
                                         className="wa-new-chat wa-add-favorites"
-                                        aria-label="Add chats to favorites"
-                                        title="Add chats to favorites"
+                                        aria-label="Manage favorite chats"
+                                        title="Manage favorite chats"
                                         onClick={() => {
                                             setFavoriteSelection(favoriteChatKeys);
                                             setView("favorite-select");
                                         }}
                                     >
-                                        <FaPlus aria-hidden="true" /> Add
+                                        <FaBookmark aria-hidden="true" /> Manage
                                     </button>
                                 )}
                             </div>
                             <div className="wa-list-scroll">
+                                {developerProfile && developerProfile.id !== profile.id && (
+                                    <button
+                                        type="button"
+                                        className="wa-conversation-row wa-developer-card"
+                                        onClick={() => openConversation({
+                                            key: `private-${developerProfile.id}`,
+                                            id: developerProfile.id,
+                                            type: "private",
+                                            title: developerProfile.fullName,
+                                            participant: developerProfile
+                                        })}
+                                    >
+                                        <span className="wa-course-avatar wa-private-avatar">
+                                            {developerProfile.avatarUrl
+                                                ? <img src={developerProfile.avatarUrl} alt="" />
+                                                : <FaUserCircle aria-hidden="true" />}
+                                        </span>
+                                        <span className="wa-conversation-main">
+                                            <strong>Chat with the brain behind SmartCampus</strong>
+                                            <small>@{developerProfile.username} · {developerProfile.about}</small>
+                                        </span>
+                                    </button>
+                                )}
                                 {visibleChats.map((item) => {
                                     if (item.type === "course") {
                                         const { course } = item;
@@ -1938,7 +1970,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                         </div>
                                     );
                                 })}
-                                {!visibleChats.length && (
+                                {!visibleChats.length && !developerProfile && (
                                     <p className="wa-empty">No conversations match this view or search.</p>
                                 )}
                             </div>
@@ -2152,8 +2184,31 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                             </label>
                             {error && <p className="wa-inline-error" role="alert">{error}</p>}
                             <div className="wa-list-scroll wa-coursemate-list">
+                                {developerProfile && developerProfile.id !== profile.id && (
+                                    <button
+                                        type="button"
+                                        className="wa-conversation-row wa-developer-card"
+                                        onClick={() => openConversation({
+                                            key: `private-${developerProfile.id}`,
+                                            id: developerProfile.id,
+                                            type: "private",
+                                            title: developerProfile.fullName,
+                                            participant: developerProfile
+                                        })}
+                                    >
+                                        <span className="wa-course-avatar wa-private-avatar">
+                                            {developerProfile.avatarUrl
+                                                ? <img src={developerProfile.avatarUrl} alt="" />
+                                                : <FaUserCircle aria-hidden="true" />}
+                                        </span>
+                                        <span className="wa-conversation-main">
+                                            <strong>Chat with the brain behind SmartCampus</strong>
+                                            <small>@{developerProfile.username} · {developerProfile.about}</small>
+                                        </span>
+                                    </button>
+                                )}
                                 {coursematesLoading ? (
-                                    <p className="wa-empty" role="status">Loading your coursemates...</p>
+                                    <span className="sr-only" role="status">Loading coursemates</span>
                                 ) : (
                                     <>
                                         {matchingCoursemates.map((member) => (
@@ -2184,7 +2239,9 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     <p className="wa-empty" role="status">Searching SmartCampus usernames...</p>
                                 )}
                                 {usernameSearchError && <p className="wa-inline-error" role="alert">{usernameSearchError}</p>}
-                                {!usernameSearchLoading && usernameSearchProfile && !usernameSearchIsCoursemate && (
+                                {!usernameSearchLoading && usernameSearchProfile &&
+                                    usernameSearchProfile.id !== developerProfile?.id &&
+                                    !usernameSearchIsCoursemate && (
                                     <>
                                         <p className="wa-section-label">SMARTCAMPUS USERS</p>
                                         <button
@@ -2210,11 +2267,11 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                         </button>
                                     </>
                                 )}
-                                {!coursematesLoading && !query.trim() && !coursemates.length && (
+                                {!coursematesLoading && !query.trim() && !coursemates.length && !developerProfile && (
                                     <p className="wa-empty">No coursemates have created a chat profile yet.</p>
                                 )}
                                 {!coursematesLoading && query.trim() && !matchingCoursemates.length
-                                    && !usernameSearchLoading && !usernameSearchProfile && !usernameSearchError && (
+                                    && !usernameSearchLoading && !usernameSearchProfile && !usernameSearchError && !developerProfile && (
                                         <p className="wa-empty">No coursemates or SmartCampus usernames match your search.</p>
                                     )}
                             </div>
@@ -2238,12 +2295,11 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                 <div className="wa-heading-copy">
                                     <h2>{activeChat?.title}</h2>
                                     <small>{activeChat?.type === "course"
-                                        ? `${activeChat.studentCount} students · Group chat · ${
-                                            realtimeMode === "supabase" ? "Supabase live" : "Live"
-                                        }`
-                                        : `@${activeChat?.participant?.username} · ${
-                                            onlineProfiles.has(activeChat?.participant?.id) ? "Online" : "Offline"
-                                        } · ${realtimeMode === "supabase" ? "Supabase live" : "Live"}`}</small>
+                                        ? `${activeChat.studentCount} students · Group chat`
+                                        : <span className={`wa-presence${onlineProfiles.has(activeChat?.participant?.id) ? " is-online" : ""}`}>
+                                            <i aria-hidden="true" />
+                                            {onlineProfiles.has(activeChat?.participant?.id) ? "Online" : "Offline"}
+                                        </span>}</small>
                                     {activeChat?.participant?.phone && <small>Phone: {activeChat.participant.phone}</small>}
                                     {activeChat?.participant?.email && <small>Email: {activeChat.participant.email}</small>}
                                     {activeChat?.participant?.matNumber && (
@@ -2289,75 +2345,32 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     if (entry.type === "image-group") {
                                         return (
                                             <div className={`wa-image-group${entry.own ? " wa-image-group-own" : ""}`} key={entry.key}>
-                                                {entry.messages.map((message) => (
+                                                {entry.messages.slice(0, 4).map((message, index) => (
                                                     <article
                                                         key={message.id}
                                                         className={`wa-message wa-message-image${entry.own ? " wa-message-own" : ""}`}
-                                                        onContextMenu={(event) => {
-                                                            event.preventDefault();
-                                                            setContextMessage(message);
-                                                        }}
-                                                        onDoubleClick={() => setContextMessage(message)}
-                                                        onTouchStart={(event) => {
-                                                            const timer = window.setTimeout(() => setContextMessage(message), 650);
-                                                            event.currentTarget.dataset.longPressTimer = String(timer);
-                                                        }}
-                                                        onTouchEnd={(event) => {
-                                                            window.clearTimeout(Number(event.currentTarget.dataset.longPressTimer));
-                                                            const now = Date.now();
-                                                            if (lastTouchRef.current.messageId === message.id &&
-                                                                now - lastTouchRef.current.at < 350) {
-                                                                setContextMessage(message);
-                                                                lastTouchRef.current = { messageId: null, at: 0 };
-                                                            } else {
-                                                                lastTouchRef.current = { messageId: message.id, at: now };
-                                                            }
-                                                        }}
                                                     >
                                                         {!entry.own &&
                                                             <strong className="wa-sender-name">@{message.sender?.username || activeChat?.participant?.username || "student"}</strong>}
                                                         {mediaSources[message.id]
-                                                            ? <img className="wa-media-message" src={mediaSources[message.id]} alt={message.content || "Shared image"} loading="lazy" />
+                                                            ? <button
+                                                                type="button"
+                                                                className="wa-image-open"
+                                                                aria-label={`View image ${index + 1} of ${entry.messages.length}`}
+                                                                onClick={() => setMediaViewer({ type: "image", message, messages: entry.messages, index })}
+                                                            >
+                                                                <img className="wa-media-message" src={mediaSources[message.id]} alt={message.content || "Shared image"} loading="lazy" />
+                                                                {index === 3 && entry.messages.length > 4 && <span className="wa-image-group-more">+{entry.messages.length - 4}</span>}
+                                                            </button>
                                                             : <span className="wa-voice-loading">Image is not saved on this device yet.</span>}
                                                         <div className="wa-message-meta">
                                                             <time>{formatTime(message.createdAt)}</time>
                                                             {message.pending
-                                                                ? <span className="wa-pending-status">Queued</span>
+                                                                ? <span className="wa-pending-status" aria-label="Queued" title="Waiting to send"><FaClock aria-hidden="true" /></span>
                                                                 : entry.own && message.receiverProfileId && message.deliveredAt
                                                                 ? <FaCheckDouble className={message.isRead ? "wa-read-tick" : "wa-delivered-tick"} aria-label={message.isRead ? "Seen" : "Delivered"} />
                                                                 : entry.own && <FaCheck aria-label="Sent" />}
                                                         </div>
-                                                        {message.reactions?.length > 0 && (
-                                                            <div className="wa-message-reactions" aria-label="Message reactions">
-                                                                {message.reactions.map((reaction) => (
-                                                                    <button
-                                                                        type="button"
-                                                                        key={reaction.emoji}
-                                                                        className={reaction.reactedByMe ? "is-reacted" : ""}
-                                                                        aria-label={`${reaction.emoji}, ${reaction.count} reactions`}
-                                                                        onClick={() => toggleReaction(message, reaction.emoji)}
-                                                                    >
-                                                                        {reaction.emoji}<span>{reaction.count}</span>
-                                                                    </button>
-                                                                ))}
-                                                            </div>
-                                                        )}
-                                                        {contextMessage?.id === message.id && (
-                                                            <div className="wa-context-menu" role="menu">
-                                                                <div className="wa-quick-reactions" aria-label="Add reaction">
-                                                                    {["👍", "❤️", "😂", "😮", "😢", "🙏"].map((emoji) => (
-                                                                        <button type="button" key={emoji} aria-label={`React ${emoji}`} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>
-                                                                    ))}
-                                                                </div>
-                                                                <button type="button" onClick={() => { setReplyTo(message); setContextMessage(null); draftRef.current?.focus(); }}><FaReply /> Reply</button>
-                                                                <button type="button" onClick={() => copyMessage(message)}><FaCopy /> Copy</button>
-                                                                <button type="button" onClick={() => downloadMessageMedia(message)}><FaDownload /> Save to device</button>
-                                                                <button type="button" onClick={() => toggleSaveMessage(message)}>
-                                                                    <FaBookmark /> {savedMessages.some((item) => item.id === message.id) ? "Unsave" : "Save"}
-                                                                </button>
-                                                                <button type="button" onClick={() => deleteForMe(message)}><FaTrash /> Delete for me</button>
-                                                            </div>
-                                                        )}
                                                     </article>
                                                 ))}
                                             </div>
@@ -2365,20 +2378,21 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     }
                                     const { message } = entry;
                                     const own = message.senderProfileId === profile.id;
+                                    const supportsMessageActions = message.type === "text";
                                     return (
                                         <article
                                             key={entry.key}
                                             className={`wa-message wa-message-${message.type}${own ? " wa-message-own" : ""}`}
-                                            onContextMenu={(event) => {
+                                            onContextMenu={supportsMessageActions ? (event) => {
                                                 event.preventDefault();
                                                 setContextMessage(message);
-                                            }}
-                                            onDoubleClick={() => setContextMessage(message)}
-                                            onTouchStart={(event) => {
+                                            } : undefined}
+                                            onDoubleClick={supportsMessageActions ? () => setContextMessage(message) : undefined}
+                                            onTouchStart={supportsMessageActions ? (event) => {
                                                 const timer = window.setTimeout(() => setContextMessage(message), 650);
                                                 event.currentTarget.dataset.longPressTimer = String(timer);
-                                            }}
-                                            onTouchEnd={(event) => {
+                                            } : undefined}
+                                            onTouchEnd={supportsMessageActions ? (event) => {
                                                 window.clearTimeout(Number(event.currentTarget.dataset.longPressTimer));
                                                 const now = Date.now();
                                                 if (lastTouchRef.current.messageId === message.id &&
@@ -2388,14 +2402,16 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                 } else {
                                                     lastTouchRef.current = { messageId: message.id, at: now };
                                                 }
-                                            }}
+                                            } : undefined}
                                         >
                                             {!own && (
                                                 <strong className="wa-sender-name">@{message.sender?.username || activeChat?.participant?.username || "student"}</strong>
                                             )}
                                             {message.reply && <div className="wa-reply-quote">{message.reply.content}</div>}
                                             {(message.type === "gif" || message.type === "sticker") ? (
-                                                <img className="wa-media-message" src={message.content} alt={message.type === "gif" ? "Shared GIF" : "Shared sticker"} loading="lazy" />
+                                                <button type="button" className="wa-image-open wa-chat-animation" onClick={() => setMediaViewer({ type: message.type, src: message.content, message })} aria-label={`View shared ${message.type}`}>
+                                                    <img className="wa-media-message" src={message.content} alt={message.type === "gif" ? "Shared GIF" : "Shared sticker"} loading="lazy" />
+                                                </button>
                                             ) : message.type === "voice" ? (
                                                 mediaSources[message.id]
                                                     ? <audio className="wa-voice-note" controls preload="metadata" src={mediaSources[message.id]} aria-label="Voice note" />
@@ -2403,12 +2419,16 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                             ) : message.type === "image" ? (
                                                 mediaSources[message.id]
                                                     ? <div className="wa-local-media">
-                                                        <img className="wa-media-message" src={mediaSources[message.id]} alt={message.content || "Shared image"} loading="lazy" />
-                                                        <button type="button" onClick={() => downloadMessageMedia(message)} aria-label="Save photo to this device" title="Save photo">
-                                                            <FaDownload aria-hidden="true" />
+                                                        <button
+                                                            type="button"
+                                                            className="wa-image-open"
+                                                            onClick={() => setMediaViewer({ type: "image", src: mediaSources[message.id], message })}
+                                                            aria-label="View shared image"
+                                                        >
+                                                            <img className="wa-media-message" src={mediaSources[message.id]} alt={message.content || "Shared image"} loading="lazy" />
                                                         </button>
                                                     </div>
-                                                    : <span className="wa-voice-loading">Loading image…</span>
+                                                    : <span className="wa-media-placeholder" role="status" aria-label="Loading image" />
                                             ) : message.type === "file" ? (
                                                 mediaSources[message.id]
                                                     ? /\.pdf$/i.test(message.content || "")
@@ -2421,7 +2441,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                             </div>
                                                         </div>
                                                         : <a className="wa-file-message" href={mediaSources[message.id]} download={message.content}><FaFile aria-hidden="true" /> {message.content}</a>
-                                                    : <span className="wa-voice-loading">Loading file…</span>
+                                                    : <span className="wa-media-placeholder is-compact" role="status" aria-label="Loading file" />
                                             ) : message.type === "contact" ? (() => {
                                                 const contact = parseContactCard(message.content);
                                                 return contact ? (
@@ -2444,12 +2464,12 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                             <div className="wa-message-meta">
                                                 <time>{formatTime(message.createdAt)}</time>
                                                 {message.pending
-                                                    ? <span className="wa-pending-status">Queued</span>
+                                                    ? <span className="wa-pending-status" aria-label="Queued" title="Waiting to send"><FaClock aria-hidden="true" /></span>
                                                     : own && message.receiverProfileId && message.deliveredAt
                                                     ? <FaCheckDouble className={message.isRead ? "wa-read-tick" : "wa-delivered-tick"} aria-label={message.isRead ? "Seen" : "Delivered"} />
                                                     : own && <FaCheck aria-label="Sent" />}
                                             </div>
-                                            {message.reactions?.length > 0 && (
+                                            {supportsMessageActions && message.reactions?.length > 0 && (
                                                 <div className="wa-message-reactions" aria-label="Message reactions">
                                                     {message.reactions.map((reaction) => (
                                                         <button
@@ -2464,7 +2484,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                     ))}
                                                 </div>
                                             )}
-                                            {contextMessage?.id === message.id && (
+                                            {supportsMessageActions && contextMessage?.id === message.id && (
                                                 <div className="wa-context-menu" role="menu">
                                                     <div className="wa-quick-reactions" aria-label="Add reaction">
                                                         {["👍", "❤️", "😂", "😮", "😢", "🙏"].map((emoji) => (
@@ -2504,7 +2524,8 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     <nav className="wa-picker-tabs" aria-label="GIF and sticker picker">
                                         {[
                                             ["gif", "GIFs"],
-                                            ["sticker", "Stickers"]
+                                            ["sticker", "Stickers"],
+                                            ["favorites", "Saved"]
                                         ].map(([tab, label]) => (
                                             <button
                                                 type="button"
@@ -2514,32 +2535,40 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                 onClick={() => {
                                                     setMediaType(tab);
                                                     setMediaResults([]);
+                                                    setMediaSearching(false);
                                                 }}
                                             >{label}</button>
                                         ))}
                                     </nav>
-                                    <form className="wa-media-search" onSubmit={searchMedia}>
-                                        <input
-                                            value={mediaQuery}
-                                            onChange={(event) => setMediaQuery(event.target.value)}
-                                            placeholder={`Search ${mediaType === "gif" ? "GIFs" : "stickers"}`}
-                                            aria-label={`Search ${mediaType === "gif" ? "GIFs" : "stickers"}`}
-                                        />
-                                        <button className="chat-primary-button" type="submit" disabled={mediaSearching || mediaQuery.trim().length < 2}>
-                                            {mediaSearching ? "Searching…" : "Search"}
-                                        </button>
-                                    </form>
+                                    <input
+                                        className="wa-media-search-input"
+                                        value={mediaQuery}
+                                        onChange={(event) => {
+                                            setMediaQuery(event.target.value);
+                                            if (event.target.value.trim().length < 2) setMediaSearching(false);
+                                        }}
+                                        placeholder={mediaType === "favorites" ? "Filter saved media" : `Type to search ${mediaType === "gif" ? "GIFs" : "stickers"}`}
+                                        aria-label={mediaType === "favorites" ? "Filter saved media" : `Search ${mediaType === "gif" ? "GIFs" : "stickers"}`}
+                                    />
                                     <div className="wa-media-results">
-                                        {mediaResults.map((item) => (
-                                            <div className="wa-media-choice" key={item.id}>
+                                        {visibleMediaResults.map((item) => (
+                                            <div className="wa-media-choice" key={item.id || item.url}>
                                                 <button
                                                     type="button"
-                                                    aria-label={`Send ${mediaType}`}
-                                                    onClick={() => sendMessage(null, { content: item.url, type: mediaType })}
+                                                    aria-label={`Send ${item.type || mediaType}`}
+                                                    onClick={() => sendMessage(null, { content: item.url, type: item.type || mediaType })}
                                                 ><img src={item.previewUrl} alt="" loading="lazy" /></button>
+                                                <button
+                                                    type="button"
+                                                    className={`wa-media-favorite${favoriteMedia.some((favorite) => favorite.url === item.url) ? " is-favorite" : ""}`}
+                                                    aria-label={favoriteMedia.some((favorite) => favorite.url === item.url) ? "Remove from saved media" : "Save to favorites"}
+                                                    onClick={() => toggleFavoriteMedia({ ...item, type: item.type || mediaType })}
+                                                >{favoriteMedia.some((favorite) => favorite.url === item.url) ? "♥" : "♡"}</button>
                                             </div>
                                         ))}
-                                        {!mediaSearching && !mediaResults.length && <span>Search for something to share.</span>}
+                                        {!mediaSearching && !visibleMediaResults.length && (
+                                            <span>{mediaType === "favorites" ? "No saved GIFs or stickers yet." : "Type at least two characters to search."}</span>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -2563,9 +2592,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     </div>
                                     {showAttachments === "contacts" && (
                                         <div className="wa-attachment-contacts">
-                                            {coursematesLoading
-                                                ? <span>Loading coursemates...</span>
-                                                : !coursemates.length && <span>No coursemate contacts available.</span>}
+                                            {!coursematesLoading && !coursemates.length && <span>No coursemate contacts available.</span>}
                                             {!coursematesLoading && coursemates.map((member) => (
                                                 <button type="button" key={member.id} onClick={() => sendContact(member)}>
                                                     {member.avatarUrl
@@ -2639,6 +2666,39 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                             </form>
                         </>
                     )}
+                    {mediaViewer && (() => {
+                        const viewerMessages = mediaViewer.messages || [mediaViewer.message];
+                        const viewerIndex = mediaViewer.index || 0;
+                        const viewerMessage = viewerMessages[viewerIndex];
+                        const viewerSrc = mediaViewer.src || mediaSources[viewerMessage.id] || viewerMessage.content;
+                        const isSaved = favoriteMedia.some((item) => item.url === viewerMessage.content);
+                        return (
+                            <div className="wa-media-viewer" role="dialog" aria-modal="true" aria-label="Shared media" onClick={() => setMediaViewer(null)}>
+                                <div className="wa-media-viewer-content" onClick={(event) => event.stopPropagation()}>
+                                    <button type="button" className="wa-media-viewer-close" aria-label="Close media viewer" onClick={() => setMediaViewer(null)}><FaTimes /></button>
+                                    <img src={viewerSrc} alt={viewerMessage.content || "Shared media"} />
+                                    <div className="wa-media-viewer-actions">
+                                        {["gif", "sticker"].includes(viewerMessage.type) ? (
+                                            <button type="button" onClick={() => toggleFavoriteMedia({
+                                                url: viewerMessage.content,
+                                                previewUrl: viewerMessage.content,
+                                                type: viewerMessage.type
+                                            })}>{isSaved ? "Remove from favorites" : "Add to favorites"}</button>
+                                        ) : viewerMessage.type === "image" ? (
+                                            <button type="button" onClick={() => downloadMessageMedia(viewerMessage)}><FaDownload /> Download image</button>
+                                        ) : null}
+                                        {viewerMessages.length > 1 && (
+                                            <div>
+                                                <button type="button" aria-label="Previous image" disabled={viewerIndex === 0} onClick={() => setMediaViewer({ ...mediaViewer, index: viewerIndex - 1 })}>Previous</button>
+                                                <span>{viewerIndex + 1} / {viewerMessages.length}</span>
+                                                <button type="button" aria-label="Next image" disabled={viewerIndex === viewerMessages.length - 1} onClick={() => setMediaViewer({ ...mediaViewer, index: viewerIndex + 1 })}>Next</button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
                 </section>
             )}
         </>

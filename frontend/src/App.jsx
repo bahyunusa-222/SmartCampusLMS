@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 
 import Layout from "./components/Layout";
 import FloatingChatHost from "./components/FloatingChatHost";
+import InstallAppPrompt from "./components/InstallAppPrompt";
 import ProtectedRoute from "./components/ProtectedRoute";
 import PublicRoute from "./components/PublicRoute";
 import RoleRoute from "./components/RoleRoute";
@@ -194,6 +195,7 @@ function App() {
                 </Routes>
             </Suspense>
             <FloatingChatHost />
+            <InstallAppPrompt />
         </BrowserRouter>
     );
 }

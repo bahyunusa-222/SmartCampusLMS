@@ -397,50 +397,61 @@ const Login = () => {
                         <p className="portfolio-eyebrow"><FaHandshake aria-hidden="true" /> BUILD WITH US</p>
                         <h2 id="collaboration-modal-title">Discuss a collaboration</h2>
                         <p>Your message will be sent to the SmartCampus LMS school contact.</p>
-                        {collaborationStatus && (
-                            <p className={`portfolio-form-status ${collaborationStatus.type}`} role={collaborationStatus.type === "error" ? "alert" : "status"}>
-                                {collaborationStatus.text}
-                            </p>
+                        {collaborationStatus?.type === "success" ? (
+                            <div className="portfolio-collaboration-confirmation" role="status">
+                                <p>{collaborationStatus.text}</p>
+                                <button className="portfolio-collaboration-link" type="button" onClick={() => setCollaborationOpen(false)}>
+                                    Return to SmartCampus <FaArrowRight aria-hidden="true" />
+                                </button>
+                            </div>
+                        ) : (
+                            <form className="portfolio-collaboration-form" onSubmit={handleCollaborationSubmit}>
+                                {collaborationStatus?.type === "error" && (
+                                    <p className="portfolio-form-status error" role="alert">{collaborationStatus.text}</p>
+                                )}
+                                <label>
+                                    Name
+                                    <input
+                                        type="text"
+                                        maxLength={120}
+                                        value={collaborationForm.name}
+                                        onChange={(event) => setCollaborationForm((current) => ({ ...current, name: event.target.value }))}
+                                        placeholder="Your name"
+                                        autoComplete="name"
+                                        required
+                                        disabled={collaborationSubmitting}
+                                    />
+                                </label>
+                                <label>
+                                    Email for a reply
+                                    <input
+                                        type="email"
+                                        maxLength={254}
+                                        value={collaborationForm.email}
+                                        onChange={(event) => setCollaborationForm((current) => ({ ...current, email: event.target.value }))}
+                                        placeholder="you@example.com"
+                                        autoComplete="email"
+                                        required
+                                        disabled={collaborationSubmitting}
+                                    />
+                                </label>
+                                <label>
+                                    Message
+                                    <textarea
+                                        required
+                                        maxLength={5000}
+                                        rows={4}
+                                        value={collaborationForm.message}
+                                        onChange={(event) => setCollaborationForm((current) => ({ ...current, message: event.target.value }))}
+                                        placeholder="Write your collaboration message here..."
+                                        disabled={collaborationSubmitting}
+                                    />
+                                </label>
+                                <button className="portfolio-collaboration-link" type="submit" disabled={collaborationSubmitting}>
+                                    {collaborationSubmitting ? "Sending..." : "Send message"} <FaArrowRight aria-hidden="true" />
+                                </button>
+                            </form>
                         )}
-                        <form className="portfolio-collaboration-form" onSubmit={handleCollaborationSubmit}>
-                            <label>
-                                Name (optional)
-                                <input
-                                    type="text"
-                                    maxLength={120}
-                                    value={collaborationForm.name}
-                                    onChange={(event) => setCollaborationForm((current) => ({ ...current, name: event.target.value }))}
-                                    placeholder="Your name"
-                                    disabled={collaborationSubmitting}
-                                />
-                            </label>
-                            <label>
-                                Email for a reply (optional)
-                                <input
-                                    type="email"
-                                    maxLength={254}
-                                    value={collaborationForm.email}
-                                    onChange={(event) => setCollaborationForm((current) => ({ ...current, email: event.target.value }))}
-                                    placeholder="you@example.com"
-                                    disabled={collaborationSubmitting}
-                                />
-                            </label>
-                            <label>
-                                Message
-                                <textarea
-                                    required
-                                    maxLength={5000}
-                                    rows={4}
-                                    value={collaborationForm.message}
-                                    onChange={(event) => setCollaborationForm((current) => ({ ...current, message: event.target.value }))}
-                                    placeholder="Write your collaboration message here..."
-                                    disabled={collaborationSubmitting}
-                                />
-                            </label>
-                            <button className="portfolio-collaboration-link" type="submit" disabled={collaborationSubmitting}>
-                                {collaborationSubmitting ? "Sending..." : "Send message"} <FaArrowRight aria-hidden="true" />
-                            </button>
-                        </form>
                     </section>
                 </div>
             )}

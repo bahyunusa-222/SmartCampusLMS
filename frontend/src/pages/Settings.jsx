@@ -248,8 +248,8 @@ const Settings = ({ theme, setTheme }) => {
         {
             to: "/help-feedback",
             title: "Help & Feedback",
-            description: "Follow step-by-step navigation guides or send private feedback.",
-            keywords: "help support guide feedback",
+            description: "Browse help, send feedback, or contact us about collaboration.",
+            keywords: "help support guide feedback collaborate collaboration partnership contact email",
             Icon: FaLifeRing
         }
     ] : showProfileSettings && !settingsSubpage ? [
@@ -267,7 +267,7 @@ const Settings = ({ theme, setTheme }) => {
         { to: "/settings/preferences/appearance", title: "Color theme", description: "Choose light or dark mode.", keywords: "appearance", Icon: FaSun },
         { to: "/settings/preferences/text-size", title: "Text size", description: "Adjust text size for your account.", keywords: "font accessibility", Icon: FaSlidersH },
         { to: "/settings/preferences/motion", title: "Motion effects", description: "Choose whether interface animations are reduced.", keywords: "animation accessibility motion", Icon: FaMoon },
-        { to: "/settings/preferences/gestures", title: "Mobile gestures", description: "Assign double taps and swipes to navigation shortcuts.", keywords: "mobile gesture double triple tap swipe", Icon: FaSlidersH },
+        { to: "/settings/preferences/gestures", title: "Mobile gestures", description: "Assign long press, taps, and directional swipes to navigation shortcuts.", keywords: "mobile gesture long press double triple tap swipe", Icon: FaSlidersH },
         { to: "/settings/preferences/home-page", title: "Default page", description: "Choose where SmartCampus opens after login.", keywords: "home start", Icon: FaBookOpen },
         { to: "/settings/preferences/notifications", title: "Notification badge", description: "Show or hide the unread count on the bell.", keywords: "alerts unread count", Icon: FaSlidersH }
     ] : showCourseSettings && !settingsSubpage && isStaff && selectedCourseId ? [

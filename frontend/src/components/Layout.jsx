@@ -15,6 +15,8 @@ const Layout = ({ open, toggle, onClose, theme, toggleTheme }) => {
         let gestures = readGesturePreferences(user?.id);
         let tapCount = 0;
         let tapTimer;
+        let longPressTimer;
+        let longPressTriggered = false;
         let pointerStart = null;
         const runGesture = (gesture) => {
             const destination = gestures[gesture];
@@ -29,19 +31,34 @@ const Layout = ({ open, toggle, onClose, theme, toggleTheme }) => {
                 pointerStart = null;
                 return;
             }
-            pointerStart = { x: event.clientX, y: event.clientY };
+            pointerStart = { x: event.clientX, y: event.clientY, target: event.target };
+            longPressTriggered = false;
+            longPressTimer = window.setTimeout(() => {
+                if (!pointerStart) return;
+                longPressTriggered = true;
+                tapCount = 0;
+                runGesture("longPress");
+            }, 600);
         };
         const onPointerUp = (event) => {
             if (window.innerWidth > 768 || event.pointerType !== "touch" || !pointerStart) return;
             const deltaX = event.clientX - pointerStart.x;
             const deltaY = event.clientY - pointerStart.y;
             pointerStart = null;
+            window.clearTimeout(longPressTimer);
+            if (longPressTriggered) {
+                longPressTriggered = false;
+                return;
+            }
             if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) >= 55) {
                 window.clearTimeout(tapTimer);
                 tapCount = 0;
-                runGesture(Math.abs(deltaX) > Math.abs(deltaY)
+                const gesture = Math.abs(deltaX) > Math.abs(deltaY)
                     ? (deltaX < 0 ? "swipeLeft" : "swipeRight")
-                    : (deltaY < 0 ? "swipeUp" : "swipeDown"));
+                    : (deltaY < 0 ? "swipeUp" : "swipeDown");
+                if (gestures[gesture]) runGesture(gesture);
+                else if (gesture === "swipeRight" && deltaX > 0) navigate(-1);
+                else if (gesture === "swipeLeft" && deltaX < 0) navigate(1);
                 return;
             }
             tapCount += 1;
@@ -57,14 +74,29 @@ const Layout = ({ open, toggle, onClose, theme, toggleTheme }) => {
             }, 360);
         };
         const refreshGestures = () => { gestures = readGesturePreferences(user?.id); };
+        const cancelLongPress = () => {
+            pointerStart = null;
+            window.clearTimeout(longPressTimer);
+        };
+        const onPointerMove = (event) => {
+            if (!pointerStart || event.pointerType !== "touch") return;
+            if (Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 12) {
+                window.clearTimeout(longPressTimer);
+            }
+        };
         window.addEventListener("smartcampus:gesture-preferences-updated", refreshGestures);
         document.addEventListener("pointerdown", onPointerDown, { passive: true });
         document.addEventListener("pointerup", onPointerUp, { passive: true });
+        document.addEventListener("pointercancel", cancelLongPress, { passive: true });
+        document.addEventListener("pointermove", onPointerMove, { passive: true });
         return () => {
             window.clearTimeout(tapTimer);
+            window.clearTimeout(longPressTimer);
             window.removeEventListener("smartcampus:gesture-preferences-updated", refreshGestures);
             document.removeEventListener("pointerdown", onPointerDown);
             document.removeEventListener("pointerup", onPointerUp);
+            document.removeEventListener("pointercancel", cancelLongPress);
+            document.removeEventListener("pointermove", onPointerMove);
         };
     }, [navigate, user?.id, user?.role]);
 

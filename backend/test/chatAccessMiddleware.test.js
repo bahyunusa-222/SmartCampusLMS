@@ -5,6 +5,7 @@ process.env.DB_PASSWORD = "test";
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const User = require("../src/models/User");
 const chatAccessMiddleware = require("../src/middlewares/chatAccessMiddleware");
 
 const makeResponse = () => ({
@@ -30,15 +31,29 @@ test("students can use chat without an extra account lookup", async () => {
     assert.equal(nextCalls, 1);
 });
 
-test("lecturer accounts cannot use chat based on their email address", () => {
+test("lecturer accounts without the developer email cannot use chat", async () => {
+    User.findByPk = async () => ({ email: "lecturer@example.edu" });
     const response = makeResponse();
     let nextCalls = 0;
 
-    chatAccessMiddleware({ user: { id: 8, role: "lecturer", email: "developer@example.edu" } }, response, () => {
+    await chatAccessMiddleware({ user: { id: 8, role: "lecturer" } }, response, () => {
         nextCalls += 1;
     });
 
     assert.equal(nextCalls, 0);
     assert.equal(response.statusCode, 403);
     assert.deepEqual(response.body, { message: "Access denied" });
+});
+
+test("the verified developer account can use chat as a lecturer", async () => {
+    User.findByPk = async () => ({ email: "bahy1878@gmail.com" });
+    const response = makeResponse();
+    let nextCalls = 0;
+
+    await chatAccessMiddleware({ user: { id: 8, role: "lecturer" } }, response, () => {
+        nextCalls += 1;
+    });
+
+    assert.equal(nextCalls, 1);
+    assert.equal(response.statusCode, 200);
 });

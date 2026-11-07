@@ -13,10 +13,13 @@ export const reducedMotionStorageKey = (userId) => `smartcampus:reduced-motion:$
 export const gestureStorageKey = (userId) => `smartcampus:gestures:${userId}`;
 export const textSizeSteps = [50, 75, 100, 125, 150, 175, 200];
 export const gestureOptions = [
+    { value: "longPress", label: "Long press" },
     { value: "doubleTap", label: "Double tap" },
     { value: "tripleTap", label: "Triple tap" },
     { value: "swipeLeft", label: "Swipe left" },
-    { value: "swipeRight", label: "Swipe right" }
+    { value: "swipeRight", label: "Swipe right" },
+    { value: "swipeUp", label: "Swipe up" },
+    { value: "swipeDown", label: "Swipe down" }
 ];
 export const gestureActions = [
     { value: "", label: "Do nothing" },

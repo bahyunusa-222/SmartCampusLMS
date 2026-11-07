@@ -22,6 +22,8 @@ const contactVisibilityOptions = new Set(["everyone", "course", "private_contact
 const allowedAudioTypes = new Set(["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/wav"]);
 const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const reactionEmojis = new Set(["👍", "❤️", "😂", "😮", "😢", "🙏"]);
+const developerEmail = "bahy1878@gmail.com";
+const developerBio = "The brain behind SmartCampus LMS. Chat with me about the platform, feedback, or collaboration.";
 
 const normalizeChatUsername = (value) => {
     if (typeof value !== "string") return null;
@@ -65,6 +67,31 @@ const profileFor = (userId) => ChatProfile.findOne({
     where: { userId },
     attributes: [...profileFields, "userId", ...contactVisibilityFields]
 });
+
+const ensureDeveloperProfile = async (user) => {
+    let profile = await profileFor(user.id);
+    if (profile) {
+        if (!profile.about?.trim()) {
+            profile.about = developerBio;
+            await profile.save();
+        }
+        return profile;
+    }
+    let username = "smartcampusdev";
+    const owner = await usernameOwner(username);
+    if (owner && Number(owner.userId) !== Number(user.id)) username = `scdev${user.id}`;
+    [profile] = await ChatProfile.findOrCreate({
+        where: { userId: user.id },
+        defaults: {
+            userId: user.id,
+            username,
+            fullName: "SmartCampus Developer",
+            avatarUrl: null,
+            about: developerBio
+        }
+    });
+    return profile;
+};
 
 const enrolledCourseIds = async (userId) => (
     (await Enrollment.findAll({ where: { studentId: userId }, attributes: ["courseId"] }))
@@ -133,13 +160,28 @@ const canAccessMessage = async (message, profile) => {
 
 exports.getMe = async (req, res, next) => {
     try {
-        const user = await User.findByPk(req.user.id, { attributes: ["id", "fullName"] });
+        const user = await User.findByPk(req.user.id, { attributes: ["id", "fullName", "email"] });
         if (!user) return res.status(404).json({ message: "Account not found" });
-        const profile = await profileFor(req.user.id);
+        const isDeveloper = user.email?.trim().toLowerCase() === developerEmail;
+        const profile = isDeveloper
+            ? await ensureDeveloperProfile(user)
+            : await profileFor(req.user.id);
+        const developerUser = isDeveloper
+            ? user
+            : await User.findOne({
+                where: { email: developerEmail },
+                attributes: ["id", "fullName", "email"]
+            });
+        const developerProfile = developerUser
+            ? (Number(developerUser.id) === Number(req.user.id)
+                ? profile
+                : await ensureDeveloperProfile(developerUser))
+            : null;
         if (!profile) {
             return res.json({
                 profile: null,
                 suggestedFullName: user.fullName,
+                developerProfile: safeProfile(developerProfile),
                 courses: [],
                 privateChats: []
             });
@@ -248,7 +290,12 @@ exports.getMe = async (req, res, next) => {
                 chat.unreadCount = unreadCountByProfile.get(chat.profile.id) || 0;
             }
         }
-        return res.json({ profile: safeProfile(profile), courses: courseChats, privateChats });
+        return res.json({
+            profile: safeProfile(profile),
+            developerProfile: safeProfile(developerProfile),
+            courses: courseChats,
+            privateChats
+        });
     } catch (error) {
         return next(error);
     }

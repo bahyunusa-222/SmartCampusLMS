@@ -46,6 +46,7 @@ const originalPublishProfiles = chatRealtime.publishProfiles;
 const originalEnrollmentFindAll = Enrollment.findAll;
 const originalEnrollmentFindOne = Enrollment.findOne;
 const originalUserFindByPk = User.findByPk;
+const originalUserFindOne = User.findOne;
 const originalSupabaseJwtSecret = process.env.SUPABASE_JWT_SECRET;
 const originalGiphyApiKey = process.env.GIPHY_API_KEY;
 const originalTenorApiKey = process.env.TENOR_API_KEY;
@@ -77,6 +78,7 @@ afterEach(() => {
     Enrollment.findAll = originalEnrollmentFindAll;
     Enrollment.findOne = originalEnrollmentFindOne;
     User.findByPk = originalUserFindByPk;
+    User.findOne = originalUserFindOne;
     if (originalSupabaseJwtSecret === undefined) delete process.env.SUPABASE_JWT_SECRET;
     else process.env.SUPABASE_JWT_SECRET = originalSupabaseJwtSecret;
     if (originalGiphyApiKey === undefined) delete process.env.GIPHY_API_KEY;
@@ -101,7 +103,8 @@ const makeResponse = () => ({
 
 test("private chat unread counts are loaded in one grouped query", async () => {
     ChatProfile.findOne = async () => ({ id: "viewer-profile", userId: 7 });
-    User.findByPk = async () => ({ id: 7, fullName: "Student Seven" });
+    User.findByPk = async () => ({ id: 7, fullName: "Student Seven", email: "student7@example.edu" });
+    User.findOne = async () => null;
     Enrollment.findAll = async () => [];
     ChatHiddenMessage.findAll = async () => [];
     const privateMessages = [
@@ -261,11 +264,13 @@ test("chat usernames are not reserved for a developer profile", async () => {
     assert.deepEqual(response.body, { available: true });
 });
 
-test("opening chats does not create a developer profile automatically", async () => {
+test("opening chats does not create a developer profile when the developer account is absent", async () => {
     ChatProfile.findOne = async () => null;
+    User.findOne = async () => null;
     User.findByPk = async () => ({
         id: 42,
-        fullName: "Account Name"
+        fullName: "Account Name",
+        email: "student@example.edu"
     });
     const response = makeResponse();
 
@@ -273,6 +278,38 @@ test("opening chats does not create a developer profile automatically", async ()
 
     assert.equal(response.body.profile, null);
     assert.equal(response.body.suggestedFullName, "Account Name");
+});
+
+test("chat lists provision and return the configured developer profile", async () => {
+    const viewerProfile = {
+        id: "viewer-profile",
+        userId: 7,
+        username: "student_7",
+        fullName: "Student Seven",
+        avatarUrl: null,
+        about: ""
+    };
+    const featuredProfile = {
+        id: "developer-profile",
+        userId: 99,
+        username: "smartcampusdev",
+        fullName: "SmartCampus Developer",
+        avatarUrl: null,
+        about: "The brain behind SmartCampus LMS. Chat with me about the platform, feedback, or collaboration."
+    };
+    ChatProfile.findOne = async ({ where }) => where.userId === 7 ? viewerProfile : null;
+    ChatProfile.findOrCreate = async ({ defaults }) => [defaults, true];
+    User.findByPk = async () => ({ id: 7, fullName: "Student Seven", email: "student7@example.edu" });
+    User.findOne = async () => ({ id: 99, fullName: "Developer", email: "bahy1878@gmail.com" });
+    Enrollment.findAll = async () => [];
+    ChatHiddenMessage.findAll = async () => [];
+    ChatMessage.findAll = async () => [];
+    const response = makeResponse();
+
+    await chatController.getMe({ user: { id: 7 } }, response);
+
+    assert.equal(response.body.developerProfile.username, "smartcampusdev");
+    assert.match(response.body.developerProfile.about, /brain behind SmartCampus/);
 });
 
 test("username search finds SmartCampus students outside the requester's courses", async () => {

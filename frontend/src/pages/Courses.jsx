@@ -511,8 +511,12 @@ const Courses = ({ catalog = false }) => {
                     <h1>{sectionDetails?.title || "My Courses"}</h1>
                 </div>
                 <div className="course-header-actions">
-                    <Link to="/catalog" className="btn btn-inline"><FaSearch /> Find courses</Link>
-                    <Link to="/join" className="btn btn-inline"><FaPlus /> Join by code</Link>
+                    <Link to="/catalog" className="btn btn-inline course-mobile-action" aria-label="Find courses" title="Find courses">
+                        <FaSearch aria-hidden="true" /><span>Find courses</span>
+                    </Link>
+                    <Link to="/join" className="btn btn-inline course-mobile-action" aria-label="Join by course code" title="Join by code">
+                        <FaPlus aria-hidden="true" /><span>Join by code</span>
+                    </Link>
                 </div>
             </header>
 

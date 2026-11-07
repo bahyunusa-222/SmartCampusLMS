@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { FaArrowLeft, FaBookOpen, FaSearch, FaStar } from "react-icons/fa";
+import { FaArrowLeft, FaBookOpen, FaHandshake, FaSearch, FaStar } from "react-icons/fa";
 import { Link } from "react-router-dom";
 import API from "../services/api";
 import { useAuth } from "../hooks/useAuth";
@@ -280,10 +280,14 @@ const HelpFeedback = () => {
     const [search, setSearch] = useState("");
     const [activeCategory, setActiveCategory] = useState("All topics");
     const [selectedArticle, setSelectedArticle] = useState(null);
-    const [activeTab, setActiveTab] = useState("help");
+    const [activeTab, setActiveTab] = useState(() =>
+        new URLSearchParams(window.location.search).get("tab") === "collaboration" ? "collaboration" : "help"
+    );
     const [rating, setRating] = useState(0);
     const [comment, setComment] = useState("");
     const [submitting, setSubmitting] = useState(false);
+    const [collaboration, setCollaboration] = useState({ name: "", email: "", message: "" });
+    const [collaborationSubmitting, setCollaborationSubmitting] = useState(false);
     const [status, setStatus] = useState(null);
     const [helpfulness, setHelpfulness] = useState(null);
     const tabButtons = useRef({});
@@ -314,9 +318,18 @@ const HelpFeedback = () => {
         setStatus(null);
     };
 
+    const startCollaboration = () => {
+        setSelectedArticle(null);
+        setActiveTab("collaboration");
+        setCollaboration({ name: "", email: "", message: "" });
+        setStatus(null);
+    };
+
     const selectTab = (tab) => {
         if (tab === "feedback") {
             startFeedback();
+        } else if (tab === "collaboration") {
+            startCollaboration();
         } else {
             setActiveTab("help");
             setStatus(null);
@@ -326,13 +339,31 @@ const HelpFeedback = () => {
     const handleTabKeyDown = (event) => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        const nextTab = event.key === "Home" ? "help"
-            : event.key === "End" ? "feedback"
-                : event.key === "ArrowRight"
-                    ? activeTab === "help" ? "feedback" : "help"
-                    : activeTab === "help" ? "feedback" : "help";
+        const tabs = ["help", "feedback", "collaboration"];
+        const index = tabs.indexOf(activeTab);
+        const nextTab = event.key === "Home" ? tabs[0]
+            : event.key === "End" ? tabs[tabs.length - 1]
+                : tabs[(index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
         selectTab(nextTab);
         tabButtons.current[nextTab]?.focus();
+    };
+
+    const submitCollaboration = async (event) => {
+        event.preventDefault();
+        setCollaborationSubmitting(true);
+        setStatus(null);
+        try {
+            await API.post("/feedback/collaboration", collaboration);
+            setCollaboration({ name: "", email: "", message: "" });
+            setStatus({ type: "success", text: "Thank you. We hope we can meet your expectations and work together." });
+        } catch (error) {
+            setStatus({
+                type: "error",
+                text: error.response?.data?.message || "Unable to send your message. Check your connection and try again."
+            });
+        } finally {
+            setCollaborationSubmitting(false);
+        }
     };
 
     const submitResponse = async ({ type, selectedRating, text, topic, helpful }) => {
@@ -350,7 +381,7 @@ const HelpFeedback = () => {
                 type: "success",
                 text: type === "helpfulness"
                     ? "Thanks. Your help-center rating has been recorded."
-                    : "Your feedback was delivered to the developer's private email."
+                    : "Thank you. We hope we have met your expectations and will keep improving SmartCampus."
             });
             return true;
         } catch (error) {
@@ -405,6 +436,9 @@ const HelpFeedback = () => {
                 </button>
                 <button ref={(node) => { tabButtons.current.feedback = node; }} id="share-feedback-tab" type="button" role="tab" aria-controls="share-feedback-panel" aria-selected={activeTab === "feedback"} tabIndex={activeTab === "feedback" ? 0 : -1} className={activeTab === "feedback" ? "tab active" : "tab"} onClick={() => selectTab("feedback")} onKeyDown={handleTabKeyDown}>
                     Share feedback
+                </button>
+                <button ref={(node) => { tabButtons.current.collaboration = node; }} id="collaboration-tab" type="button" role="tab" aria-controls="collaboration-panel" aria-selected={activeTab === "collaboration"} tabIndex={activeTab === "collaboration" ? 0 : -1} className={activeTab === "collaboration" ? "tab active" : "tab"} onClick={() => selectTab("collaboration")} onKeyDown={handleTabKeyDown}>
+                    Collaborate
                 </button>
             </div>
 
@@ -540,6 +574,34 @@ const HelpFeedback = () => {
                             {status?.type === "error" && <p className="help-status error" role="alert">{status.text}</p>}
                             <div className="help-feedback-actions">
                                 <button type="submit" className="btn btn-inline" disabled={rating === 0 || !comment.trim() || submitting}>{submitting ? "Sending..." : "Send feedback"}</button>
+                            </div>
+                        </form>
+                    )}
+                </section>
+            )}
+            {activeTab === "collaboration" && (
+                <section id="collaboration-panel" role="tabpanel" aria-labelledby="collaboration-tab" className="settings-section help-feedback-form-section">
+                    <div className="settings-section-heading">
+                        <span className="settings-section-icon"><FaHandshake aria-hidden="true" /></span>
+                        <div>
+                            <h2>Collaborate with SmartCampus</h2>
+                            <p>Share your contact details and how you would like to work with us.</p>
+                        </div>
+                    </div>
+                    {status?.type === "success" ? (
+                        <div className="help-feedback-confirmation" role="status">
+                            <h3>Thank you</h3>
+                            <p>{status.text}</p>
+                            <button type="button" className="btn btn-inline" onClick={() => { setStatus(null); setActiveTab("help"); }}>Back to help center</button>
+                        </div>
+                    ) : (
+                        <form className="help-feedback-form help-collaboration-form" onSubmit={submitCollaboration}>
+                            <label>Name<input value={collaboration.name} maxLength={120} required onChange={(event) => setCollaboration((current) => ({ ...current, name: event.target.value }))} autoComplete="name" /></label>
+                            <label>Email<input type="email" value={collaboration.email} maxLength={254} required onChange={(event) => setCollaboration((current) => ({ ...current, email: event.target.value }))} autoComplete="email" /></label>
+                            <label className="help-feedback-comment">Message<textarea value={collaboration.message} maxLength={5000} rows={5} required onChange={(event) => setCollaboration((current) => ({ ...current, message: event.target.value }))} /></label>
+                            {status?.type === "error" && <p className="help-status error" role="alert">{status.text}</p>}
+                            <div className="help-feedback-actions">
+                                <button type="submit" className="btn btn-inline" disabled={collaborationSubmitting}>{collaborationSubmitting ? "Sending..." : "Send collaboration message"}</button>
                             </div>
                         </form>
                     )}
