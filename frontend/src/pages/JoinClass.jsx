@@ -17,8 +17,8 @@ const JoinClass = ({ invitationMode = false }) => {
     const location = useLocation();
     const params = new URLSearchParams(location.search);
     const invitationCode = (params.get("code") || "").trim().toUpperCase();
-    const token = localStorage.getItem("token");
     const user = readUser();
+    const hasSession = Boolean(user);
     const [code, setCode] = useState(invitationCode);
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
@@ -49,17 +49,17 @@ const JoinClass = ({ invitationMode = false }) => {
     }, [navigate]);
 
     useEffect(() => {
-        if (!invitationCode || !token || user?.role !== "student" || attemptedCode.current === invitationCode) return;
+        if (!invitationCode || !hasSession || user?.role !== "student" || attemptedCode.current === invitationCode) return;
         attemptedCode.current = invitationCode;
         joinClass(invitationCode);
-    }, [invitationCode, joinClass, token, user?.role]);
+    }, [invitationCode, joinClass, hasSession, user?.role]);
 
     const handleJoin = (event) => {
         event.preventDefault();
         joinClass(code);
     };
 
-    if (invitationMode && !token) {
+    if (invitationMode && !hasSession) {
         const loginPath = `/login?join=${encodeURIComponent(invitationCode)}`;
         const registerPath = `/register?join=${encodeURIComponent(invitationCode)}`;
 
@@ -95,7 +95,7 @@ const JoinClass = ({ invitationMode = false }) => {
         );
     }
 
-    if (token && user?.role !== "student") {
+    if (hasSession && user?.role !== "student") {
         return (
             <div className="page-content">
                 <div className="dashboard-alert" role="alert">

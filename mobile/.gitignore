@@ -1,0 +1,10 @@
+.expo/
+dist/
+web-build/
+node_modules/
+*.jks
+*.keystore
+*.p8
+*.p12
+*.mobileprovision
+google-services.json

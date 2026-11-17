@@ -42,6 +42,12 @@ const User = sequelize.define("User", {
         defaultValue: true
     },
 
+    emailVerified: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true
+    },
+
     password: {
         type: DataTypes.STRING,
         allowNull: false,
@@ -94,6 +100,10 @@ const User = sequelize.define("User", {
     departmentId: {
         type: DataTypes.INTEGER,
         allowNull: true
+    }
+}, {
+    defaultScope: {
+        attributes: { exclude: ["password", "passwordResetTokenHash", "passwordResetExpiresAt"] }
     }
 });
 

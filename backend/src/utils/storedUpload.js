@@ -6,6 +6,10 @@ const objectStorage = require("./objectStorage");
 const objectKeyFor = (fileUrl) => {
     if (typeof fileUrl !== "string" || !fileUrl.startsWith("/uploads/")) return null;
     const key = fileUrl.slice("/uploads/".length);
+    if (/^objects\/[0-9a-f]{2}\/[0-9a-f]{64}$/i.test(key) &&
+        key.slice("objects/".length, "objects/".length + 2) === key.slice("objects/".length + 3, "objects/".length + 5)) {
+        return key;
+    }
     const ownerId = key.split("/")[0];
     return objectStorage.validateStorageKey(key, ownerId) ? key : null;
 };

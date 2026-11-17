@@ -9,6 +9,7 @@ module.exports = sequelize.define("Notification", {
     body: { type: DataTypes.TEXT, allowNull: false },
     resourceType: { type: DataTypes.STRING(40), allowNull: true },
     resourceId: { type: DataTypes.INTEGER, allowNull: true },
+    dedupeKey: { type: DataTypes.STRING(255), allowNull: true, unique: "notifications_dedupe_key_unique" },
     readAt: { type: DataTypes.DATE, allowNull: true }
 }, {
     indexes: [{ fields: ["userId", "readAt", "createdAt"] }]

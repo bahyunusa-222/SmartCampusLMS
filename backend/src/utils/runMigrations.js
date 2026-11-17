@@ -42,6 +42,8 @@ const lessonPrivateNotesMigrationName = "20261103_02_lesson_private_notes";
 const chatMessageDeliveryAndReactionsMigrationName = "20261103_03_chat_message_delivery_reactions";
 const academicCatalogMigrationName = "20261106_01_school_department_catalog";
 const academicCatalog = require("../data/academicCatalog");
+const ensureSubmissionIntegrity = require("./ensureSubmissionIntegrity");
+const privacySecurityMigrationName = "20261108_01_privacy_security";
 const migrationNames = [
     migrationName,
     followupMigrationName,
@@ -464,6 +466,32 @@ const ensureIdentityIndexes = async () => {
     }
 };
 
+const ensurePrivacySecuritySchema = async (queryInterface) => {
+    const tables = await getTables(queryInterface);
+    if (!hasTable(tables, "Users")) return;
+    const columns = await queryInterface.describeTable("Users");
+    if (!Object.prototype.hasOwnProperty.call(columns, "emailVerified")) {
+        await queryInterface.addColumn("Users", "emailVerified", {
+            type: DataTypes.BOOLEAN,
+            allowNull: false,
+            defaultValue: true
+        });
+    }
+    const migrations = await getTables(queryInterface);
+    if (hasTable(migrations, "SchemaMigrations")) {
+        const applied = await queryInterface.select(null, "SchemaMigrations", {
+            where: { name: privacySecurityMigrationName },
+            limit: 1
+        });
+        if (!applied.length) {
+            await queryInterface.bulkInsert("SchemaMigrations", [{
+                name: privacySecurityMigrationName,
+                appliedAt: new Date()
+            }]);
+        }
+    }
+};
+
 module.exports = async () => {
     const queryInterface = sequelize.getQueryInterface();
     const quote = (identifier) => queryInterface.quoteIdentifier(identifier);
@@ -480,6 +508,7 @@ module.exports = async () => {
         { type: QueryTypes.SELECT }
     );
     if (schemaMigrationsExists[0]?.schemaMigrations) {
+        await ensurePrivacySecuritySchema(queryInterface);
         const appliedMigrations = await checkExistingMigrations();
         if (migrationNames.every((name) => appliedMigrations.has(name))) {
             await applyLessonReadingProgressMigration(queryInterface);
@@ -488,6 +517,7 @@ module.exports = async () => {
             await applyChatMessageDeliveryAndReactionsMigration(queryInterface);
             await applyAcademicCatalogMigration(queryInterface);
             await ensureIdentityIndexes();
+            await ensureSubmissionIntegrity();
             return;
         }
         const previousMigrations = migrationNames.slice(0, -1);
@@ -499,6 +529,7 @@ module.exports = async () => {
             await applyChatMessageDeliveryAndReactionsMigration(queryInterface);
             await applyAcademicCatalogMigration(queryInterface);
             await ensureIdentityIndexes();
+            await ensureSubmissionIntegrity();
             return;
         }
     }
@@ -510,6 +541,7 @@ module.exports = async () => {
             appliedAt: { type: DataTypes.DATE, allowNull: false }
         });
     }
+    await ensurePrivacySecuritySchema(queryInterface);
 
     const applied = await queryInterface.select(null, "SchemaMigrations", {
         where: { name: migrationName },
@@ -1611,6 +1643,7 @@ module.exports = async () => {
     await applyChatMessageDeliveryAndReactionsMigration(queryInterface);
     await applyAcademicCatalogMigration(queryInterface);
     await ensureIdentityIndexes();
+    await ensureSubmissionIntegrity();
 };
 
 module.exports.ensureIdentityIndexes = ensureIdentityIndexes;

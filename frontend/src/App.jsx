@@ -14,6 +14,8 @@ import "./styles/global.css";
 
 const Login = lazy(() => import("./pages/Login"));
 const Register = lazy(() => import("./pages/Register"));
+const VerifyEmail = lazy(() => import("./pages/VerifyEmail"));
+const Terms = lazy(() => import("./pages/Terms"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Courses = lazy(() => import("./pages/Courses"));
 const CourseDetail = lazy(() => import("./pages/CourseDetail"));
@@ -23,6 +25,7 @@ const Grades = lazy(() => import("./pages/Grades"));
 const JoinClass = lazy(() => import("./pages/JoinClass"));
 const Students = lazy(() => import("./pages/Students"));
 const Settings = lazy(() => import("./pages/Settings"));
+const PrivacyDashboard = lazy(() => import("./pages/PrivacyDashboard"));
 const HelpFeedback = lazy(() => import("./pages/HelpFeedback"));
 const Calendar = lazy(() => import("./pages/Calendar"));
 const Announcements = lazy(() => import("./pages/Announcements"));
@@ -58,7 +61,11 @@ function App() {
     }, [accountId, theme]);
 
     useEffect(() => {
-        document.documentElement.style.fontSize = `${textSize}%`;
+        document.documentElement.style.setProperty("--app-text-size", `${textSize}%`);
+        document.documentElement.style.setProperty(
+            "--app-text-size-desktop",
+            `${Math.min(textSize, 100) * 0.9}%`
+        );
         localStorage.setItem(`smartcampus:text-size:${accountId}`, String(textSize));
     }, [accountId, textSize]);
 
@@ -92,6 +99,8 @@ function App() {
             <Suspense fallback={<div className="page-content"><p>Loading...</p></div>}>
                 <Routes>
                     <Route path="/invite" element={<JoinClass invitationMode />} />
+                    <Route path="/verify-email" element={<VerifyEmail />} />
+                    <Route path="/terms" element={<Terms />} />
                     <Route element={<PublicRoute />}>
                         <Route path="/login" element={<Login />} />
                         <Route path="/register" element={<Register />} />
@@ -157,6 +166,7 @@ function App() {
                             </RoleRoute>
                         } />
                         <Route path="settings" element={<Settings theme={theme} setTheme={setTheme} />} />
+                        <Route path="settings/privacy" element={<PrivacyDashboard />} />
                         <Route path="help-feedback" element={
                             <RoleRoute roles={["student", "lecturer"]}>
                                 <HelpFeedback />

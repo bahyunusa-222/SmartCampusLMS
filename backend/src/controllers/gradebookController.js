@@ -27,39 +27,74 @@ const managerCourse = async (courseId, user, res) => {
 exports.getGradebook = async (req, res) => {
     const course = await managerCourse(req.params.courseId, req.user, res);
     if (!course) return;
-    const [enrollments, assignments, questions, results, assessmentAttempts, assessments] = await Promise.all([
-        Enrollment.findAll({
-            where: { courseId: course.id },
-            include: [{ model: User, as: "student", attributes: ["id", "fullName", "email", "matNumber"] }],
-            order: [["createdAt", "ASC"]]
-        }),
-        Assignment.findAll({
-            where: { courseId: course.id },
-            include: [{ model: Submission, as: "submissions" }],
-            order: [["dueDate", "ASC"]]
+    const paginationRequested = req.query.limit !== undefined || req.query.offset !== undefined;
+    const limit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+    const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
+    if (paginationRequested && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 ||
+        !Number.isSafeInteger(offset) || offset < 0)) {
+        return res.status(400).json({ message: "Gradebook pagination requires limit 1-100 and a non-negative offset." });
+    }
+
+    const enrollmentQuery = {
+        where: { courseId: course.id },
+        include: [{ model: User, as: "student", attributes: ["id", "fullName", "email", "matNumber"] }],
+        order: [["createdAt", "ASC"]]
+    };
+    const enrollmentResult = paginationRequested
+        ? await Enrollment.findAndCountAll({ ...enrollmentQuery, limit, offset })
+        : { rows: await Enrollment.findAll(enrollmentQuery), count: null };
+    const enrollments = enrollmentResult.rows;
+    const studentIds = enrollments.map((item) => item.student?.id).filter(Boolean);
+    const assignments = await Assignment.findAll({
+        where: { courseId: course.id },
+        attributes: ["id", "title", "dueDate", "workType"],
+        order: [["dueDate", "ASC"]]
+    });
+    const assignmentIds = assignments.map((assignment) => assignment.id);
+    const studentScope = studentIds.length ? { [Op.in]: studentIds } : { [Op.in]: [-1] };
+    const assignmentScope = assignmentIds.length ? { [Op.in]: assignmentIds } : { [Op.in]: [-1] };
+    const [submissions, questions, results, assessmentAttempts, assessments] = await Promise.all([
+        Submission.findAll({
+            where: { studentId: studentScope, assignmentId: assignmentScope }
         }),
         Quiz.findAll({ where: { courseId: course.id }, attributes: ["id", "question"] }),
-        QuizResult.findAll({
+        studentIds.length ? QuizResult.findAll({
+            where: { studentId: studentScope },
             include: [
                 { model: Quiz, as: "quiz", where: { courseId: course.id }, attributes: ["id", "question"] },
                 { model: User, as: "student", attributes: ["id", "fullName", "matNumber"] }
             ],
             order: [["createdAt", "DESC"]]
-        }),
-        QuizAttempt.findAll({
-            where: { submittedAt: { [Op.ne]: null } },
+        }) : [],
+        studentIds.length ? QuizAttempt.findAll({
+            where: { studentId: studentScope, submittedAt: { [Op.ne]: null } },
             include: [
                 { model: QuizAssessment, as: "assessment", where: { courseId: course.id }, attributes: ["id", "title"] },
                 { model: User, as: "student", attributes: ["id", "fullName", "matNumber"] }
             ],
             order: [["submittedAt", "DESC"]]
-        }),
+        }) : [],
         QuizAssessment.findAll({
             where: { courseId: course.id },
             attributes: ["id", "title", "timeLimitMinutes"],
             order: [["createdAt", "ASC"]]
         })
     ]);
+    const submissionByStudentAndAssignment = new Map(
+        submissions.map((submission) => [`${submission.studentId}:${submission.assignmentId}`, submission])
+    );
+    const resultsByStudent = new Map();
+    for (const result of results) {
+        const studentResults = resultsByStudent.get(result.studentId) || [];
+        studentResults.push(result);
+        resultsByStudent.set(result.studentId, studentResults);
+    }
+    const attemptsByStudent = new Map();
+    for (const attempt of assessmentAttempts) {
+        const studentAttempts = attemptsByStudent.get(attempt.studentId) || [];
+        studentAttempts.push(attempt);
+        attemptsByStudent.set(attempt.studentId, studentAttempts);
+    }
     const students = enrollments.filter((item) => item.student).map((item) => {
         const student = item.student.toJSON();
         return {
@@ -69,21 +104,28 @@ exports.getGradebook = async (req, res) => {
                 assignmentId: assignment.id,
                 title: assignment.title,
                 workType: assignment.workType,
-                submission: assignment.submissions.find((submission) => submission.studentId === student.id) || null
+                submission: submissionByStudentAndAssignment.get(`${student.id}:${assignment.id}`) || null
             })),
-            quizResults: results.filter((result) => result.studentId === student.id)
-                .map((result) => result.toJSON()),
-            assessmentAttempts: assessmentAttempts.filter((attempt) => attempt.studentId === student.id)
-                .map((attempt) => attempt.toJSON())
+            quizResults: (resultsByStudent.get(student.id) || []).map((result) => result.toJSON()),
+            assessmentAttempts: (attemptsByStudent.get(student.id) || []).map((attempt) => attempt.toJSON())
         };
     });
-    res.json({
+    const response = {
         course: { id: course.id, title: course.title },
         assignmentColumns: assignments.map(({ id, title, dueDate, workType }) => ({ id, title, dueDate, workType })),
         legacyQuizQuestions: questions.map(({ id, question }) => ({ id, question })),
         assessmentColumns: assessments,
         students
-    });
+    };
+    if (paginationRequested) {
+        response.pagination = {
+            limit,
+            offset,
+            total: enrollmentResult.count,
+            hasMore: offset + enrollments.length < enrollmentResult.count
+        };
+    }
+    return res.json(response);
 };
 
 exports.getAnalytics = async (req, res) => {

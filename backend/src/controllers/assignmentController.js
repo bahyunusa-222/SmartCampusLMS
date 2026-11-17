@@ -13,6 +13,7 @@ const { sequelize } = require("../config/db");
 const createNotifications = require("../utils/createNotifications");
 const materialUpload = require("../utils/materialUpload");
 const { removeStoredUpload } = require("../utils/storedUpload");
+const { attachFileReference } = require("../utils/fileReferences");
 const { hasCoursePermission, normalizePermissions } = require("../utils/coursePermissions");
 
 const assignmentDeadline = (value) => {
@@ -65,6 +66,15 @@ exports.createAssignment = async (req, res) => {
                 fileUrl: uploadedFile?.fileUrl || null,
                 fileName: uploadedFile?.fileName || null
             }, { transaction });
+            if (uploadedFile?.storedFileId) {
+                await attachFileReference({
+                    fileId: uploadedFile.storedFileId,
+                    resourceType: "assignment",
+                    resourceId: created.id,
+                    ownerId: req.user.id,
+                    transaction
+                });
+            }
             await recordAuditLog({
                 actorId: req.user.id,
                 action: "assignment.created",
@@ -455,12 +465,23 @@ exports.submitAssignment = async (req, res) => {
             return res.status(409).json({ message: "You have already submitted this assignment." });
         }
         uploadedFile = await materialUpload(req.file, req.body, req.user.id);
-        await Submission.create({
-            studentId: req.user.id,
-            assignmentId,
-            fileUrl: uploadedFile?.fileUrl || null,
-            fileName: uploadedFile?.fileName || null,
-            answerText: answerText?.trim() || null
+        await sequelize.transaction(async (transaction) => {
+            const submission = await Submission.create({
+                studentId: req.user.id,
+                assignmentId,
+                fileUrl: uploadedFile?.fileUrl || null,
+                fileName: uploadedFile?.fileName || null,
+                answerText: answerText?.trim() || null
+            }, { transaction });
+            if (uploadedFile?.storedFileId) {
+                await attachFileReference({
+                    fileId: uploadedFile.storedFileId,
+                    resourceType: "submission",
+                    resourceId: submission.id,
+                    ownerId: req.user.id,
+                    transaction
+                });
+            }
         });
 
         res.status(201).json({ message: "Assignment submitted successfully" });
@@ -478,6 +499,9 @@ exports.submitAssignment = async (req, res) => {
             error.message.startsWith("The uploaded file") ||
             error.message.startsWith("Choose a valid file name")) {
             return res.status(400).json({ message: error.message });
+        }
+        if (error.name === "SequelizeUniqueConstraintError") {
+            return res.status(409).json({ message: "You have already submitted this assignment." });
         }
         console.error("Failed to submit assignment:", error);
         res.status(500).json({ message: "Failed to submit assignment" });

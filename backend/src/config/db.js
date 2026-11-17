@@ -29,7 +29,7 @@ const readPoolSetting = (name, defaultValue, minimum) => {
     return value;
 };
 
-const poolMax = readPoolSetting("DB_POOL_MAX", process.env.VERCEL ? 1 : 2, 1);
+const poolMax = readPoolSetting("DB_POOL_MAX", 2, 1);
 const poolMin = readPoolSetting("DB_POOL_MIN", 0, 0);
 if (poolMin > poolMax) {
     throw new Error("DB_POOL_MIN cannot exceed DB_POOL_MAX");

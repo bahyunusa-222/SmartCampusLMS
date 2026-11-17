@@ -5,7 +5,8 @@ module.exports = sequelize.define("ChatMessageMedia", {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     messageId: { type: DataTypes.UUID, allowNull: false, unique: true },
     contentType: { type: DataTypes.STRING(100), allowNull: false },
-    data: { type: DataTypes.BLOB, allowNull: false }
+    data: { type: DataTypes.BLOB, allowNull: true },
+    fileUrl: { type: DataTypes.STRING(2048), allowNull: true }
 }, {
     tableName: "ChatMessageMedia"
 });

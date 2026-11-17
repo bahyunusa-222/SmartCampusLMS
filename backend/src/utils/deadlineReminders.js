@@ -18,12 +18,33 @@ const sendDeadlineReminders = async (now = new Date()) => {
         },
         attributes: ["id", "courseId", "title", "description", "dueDate"]
     });
+    const courseIds = [...new Set(assignments.map((assignment) => assignment.courseId))];
+    const [courses, enrollments] = courseIds.length
+        ? await Promise.all([
+            Course.findAll({
+                where: { id: { [Op.in]: courseIds } },
+                attributes: ["id", "lecturerId"]
+            }),
+            Enrollment.findAll({
+                where: { courseId: { [Op.in]: courseIds } },
+                attributes: ["courseId", "studentId"],
+                order: [["courseId", "ASC"], ["studentId", "ASC"]]
+            })
+        ])
+        : [[], []];
+    const courseById = new Map(courses.map((course) => [course.id, course]));
+    const studentsByCourse = new Map();
+    for (const enrollment of enrollments) {
+        const studentIds = studentsByCourse.get(enrollment.courseId) || [];
+        studentIds.push(enrollment.studentId);
+        studentsByCourse.set(enrollment.courseId, studentIds);
+    }
     let createdCount = 0;
 
     for (const assignment of assignments) {
         const dueDate = new Date(assignment.dueDate);
         const window = dueDate.getTime() <= now.getTime() + HOUR ? "1h" : "24h";
-        const course = await Course.findByPk(assignment.courseId, { attributes: ["id", "lecturerId"] });
+        const course = courseById.get(assignment.courseId);
         if (course) {
             await createAutomatedAnnouncement({
                 automaticKey: `assignment-due:${assignment.id}:${dueDate.toISOString()}`,
@@ -35,34 +56,26 @@ const sendDeadlineReminders = async (now = new Date()) => {
                 resourceId: assignment.id
             });
         }
-        const enrollments = await Enrollment.findAll({
-            where: { courseId: assignment.courseId },
-            attributes: ["studentId"]
-        });
-        const userIds = enrollments.map((enrollment) => enrollment.studentId);
-        if (!userIds.length) continue;
-
-        for (const userId of userIds) {
+        const userIds = studentsByCourse.get(assignment.courseId) || [];
+        for (let index = 0; index < userIds.length; index += 500) {
+            const batch = userIds.slice(index, index + 500);
             await sequelize.transaction(async (transaction) => {
-                const [, created] = await DeadlineReminder.findOrCreate({
-                    where: { assignmentId: assignment.id, userId, window },
-                    defaults: { assignmentId: assignment.id, userId, window },
-                    transaction
-                });
-                if (!created) return;
-
-                if (window === "1h") {
+                const reminders = await DeadlineReminder.bulkCreate(
+                    batch.map((userId) => ({ assignmentId: assignment.id, userId, window })),
+                    { ignoreDuplicates: true, returning: true, transaction }
+                );
+                createdCount += reminders.length;
+                if (window === "1h" && reminders.length) {
                     await createNotifications({
-                        userIds: [userId],
+                        userIds: reminders.map((reminder) => reminder.userId),
                         type: "deadline-reminder",
-                        title: `Assignment due within one hour`,
+                        title: "Assignment due within one hour",
                         body: `${assignment.title} is due ${dueDate.toLocaleString()}.`,
                         resourceType: "assignment",
                         resourceId: assignment.id,
                         transaction
                     });
                 }
-                createdCount += 1;
             });
         }
     }

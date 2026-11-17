@@ -4,7 +4,6 @@ import API from "../services/api";
 import GoogleSignInButton from "../components/GoogleSignInButton";
 
 const saveSession = (result) => {
-    localStorage.setItem("token", result.data.token);
     localStorage.setItem("user", JSON.stringify(result.data.user));
     window.dispatchEvent(new Event("smartcampus:account-changed"));
 };
@@ -25,6 +24,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
     });
     const [error, setError] = useState("");
     const [message, setMessage] = useState("");
+    const [registrationComplete, setRegistrationComplete] = useState(false);
     const [loading, setLoading] = useState(false);
     const [registrationMethod, setRegistrationMethod] = useState("");
     const [googleCredential, setGoogleCredential] = useState("");
@@ -104,6 +104,20 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
         }
     };
 
+    const resendVerification = async () => {
+        setError("");
+        setMessage("");
+        setLoading(true);
+        try {
+            const response = await API.post("/auth/email/verification/resend", { email: formData.email });
+            setMessage(response.data.message);
+        } catch (verificationError) {
+            setError(verificationError.response?.data?.message || "Unable to request verification right now.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleCredential = (credential) => {
         if (loading) return;
         completeRegistration(credential);
@@ -139,7 +153,9 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                 matNumber: formData.role === "student" ? formData.matNumber : undefined,
                 phone: formData.role === "student" ? formData.phone : undefined
             });
-            finishSignup(response);
+            setRegistrationComplete(true);
+            setFormData((current) => ({ ...current, password: "", confirmPassword: "" }));
+            setMessage(response.data.message || "Account created. You can sign in now; email verification is optional.");
         } catch (registrationError) {
             setError(registrationError.response?.data?.message || (
                 registrationError.code === "ECONNABORTED" || registrationError.code === "ERR_NETWORK"
@@ -155,6 +171,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
         setRegistrationMethod(method);
         setGoogleCredential("");
         setVerifiedAccount(null);
+        setRegistrationComplete(false);
         setError("");
         setMessage("");
     };
@@ -225,6 +242,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                 <select
                     name="role"
                     value={formData.role}
+                    required
                     onChange={(event) => {
                         setFormData((current) => ({
                             ...current,
@@ -266,7 +284,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
 
             {registrationMethod === "email" && (
                 <>
-                    <form className="register-form" onSubmit={handleEmailSubmit}>
+                    {!registrationComplete && <form className="register-form" onSubmit={handleEmailSubmit}>
                         <label>
                             Full name
                             <input
@@ -338,7 +356,6 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                                 type="password"
                                 name="password"
                                 autoComplete="new-password"
-                                minLength={6}
                                 value={formData.password}
                                 onChange={(event) => setFormData((current) => ({
                                     ...current,
@@ -346,7 +363,7 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                                 }))}
                                 required
                             />
-                            <small className="register-field-hint">Use at least 6 characters.</small>
+                            <small className="register-field-hint">Use 12–128 characters. Long passphrases and spaces are allowed.</small>
                         </label>
                         <label>
                             Confirm password
@@ -354,7 +371,6 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                                 type="password"
                                 name="confirmPassword"
                                 autoComplete="new-password"
-                                minLength={6}
                                 value={formData.confirmPassword}
                                 onChange={(event) => setFormData((current) => ({
                                     ...current,
@@ -363,10 +379,15 @@ const Register = ({ embedded = false, onClose, onSuccess, onLogin }) => {
                                 required
                             />
                         </label>
-                        <button className="btn register-submit" type="submit" disabled={loading || catalogLoading || !schools.length}>
+                        {!registrationComplete && <button className="btn register-submit" type="submit" disabled={loading || catalogLoading || !schools.length}>
                             {loading ? "Creating account…" : "Create account"}
+                        </button>}
+                    </form>}
+                    {registrationComplete && (
+                        <button className="register-method-back" type="button" onClick={resendVerification} disabled={loading}>
+                            {loading ? "Sending…" : "Verify your email (optional)"}
                         </button>
-                    </form>
+                    )}
                     <button className="register-method-back" type="button" onClick={() => changeSignupMethod("")}>
                         Choose another sign-up method
                     </button>

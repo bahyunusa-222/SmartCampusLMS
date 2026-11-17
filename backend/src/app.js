@@ -1,11 +1,12 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
+const { randomUUID } = require("node:crypto");
 require("./config/env");
 
 const authRoutes = require("./Routes/authRoutes");
+const privacyRoutes = require("./Routes/privacyRoutes");
 const enrollmentRoutes = require("./Routes/enrollmentRoutes");
 const lessonRoutes = require("./Routes/lessonRoutes");
 const quizRoutes = require("./Routes/quizRoutes");
@@ -20,7 +21,14 @@ const feedbackRoutes = require("./Routes/feedbackRoutes");
 const chatRoutes = require("./Routes/chatRoutes");
 const reportRoutes = require("./Routes/reportRoutes");
 const uploadRoutes = require("./Routes/uploadRoutes");
+const internalRoutes = require("./Routes/internalRoutes");
+const searchRoutes = require("./Routes/searchRoutes");
 const { sequelize } = require("./config/db");
+const objectStorage = require("./utils/objectStorage");
+const logger = require("./utils/logger");
+const requestLogger = require("./middlewares/requestLogger");
+const PostgresRateLimitStore = require("./utils/PostgresRateLimitStore");
+require("./models/RateLimitBucket");
 
 const app = express();
 
@@ -34,17 +42,8 @@ const allowedOrigins = [
     .map((origin) => origin.trim())
     .filter(Boolean);
 
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: 100,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skip: (req) => ["GET", "HEAD", "OPTIONS"].includes(req.method) ||
-        req.path === "/api/chat/typing",
-    message: { message: "Too many write requests. Please wait before trying again." }
-});
-
 app.use(helmet());
+app.use(requestLogger);
 app.use(cors({
     origin(origin, callback) {
         if (!origin || allowedOrigins.includes(origin)) {
@@ -57,7 +56,7 @@ app.use(cors({
     credentials: true,
     exposedHeaders: ["Content-Disposition"]
 }));
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "4mb" }));
 app.use((req, res, next) => {
     if (req.body === undefined) {
         req.body = {};
@@ -66,21 +65,49 @@ app.use((req, res, next) => {
     }
     next();
 });
-app.use(morgan("dev"));
-app.use(limiter);
+app.use(rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: new PostgresRateLimitStore(),
+    skip: (req) => ["GET", "HEAD", "OPTIONS"].includes(req.method) ||
+        req.path === "/api/chat/typing" ||
+        req.path === "/api/chat/presence/heartbeat",
+    message: { message: "Too many write requests. Please wait before trying again." }
+}));
 
 app.get(["/health/live", "/api/health/live"], (req, res) => {
     res.json({ status: "ok" });
 });
 
-app.get(["/health", "/api/health"], async (req, res) => {
+app.get(["/health/ready", "/api/health/ready", "/health", "/api/health"], async (req, res) => {
+    const checks = { database: "connected", storage: "connected" };
     try {
         await sequelize.authenticate();
-        res.json({ status: "ok", database: "connected" });
     } catch (error) {
-        console.error("Readiness check failed:", error.message);
-        res.status(503).json({ status: "unavailable", database: "disconnected" });
+        checks.database = "unavailable";
+        logger.error("readiness_check_failed", {
+            requestId: req.requestId,
+            dependency: "database",
+            error: error.message
+        });
     }
+    try {
+        await objectStorage.checkHealth();
+    } catch (error) {
+        checks.storage = "unavailable";
+        logger.error("readiness_check_failed", {
+            requestId: req.requestId,
+            dependency: "storage",
+            error: error.message
+        });
+    }
+    const status = Object.values(checks).every((check) => check === "connected") ? 200 : 503;
+    res.set("Cache-Control", "no-store").status(status).json({
+        status: status === 200 ? "ok" : "unavailable",
+        checks
+    });
 });
 
 app.get("/", (req, res) => {
@@ -89,7 +116,10 @@ app.get("/", (req, res) => {
     });
 });
 
+app.use("/api/internal", internalRoutes);
+app.use("/api/search", searchRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/privacy", privacyRoutes);
 app.use("/api/courses", courseRoutes);
 app.use("/api/downloads", downloadRoutes);
 app.use("/api/audit", auditRoutes);
@@ -106,7 +136,7 @@ app.use("/api/reports", reportRoutes);
 app.use("/api", lmsRoutes);
 
 app.use((req, res) => {
-    res.status(404).json({ message: "Route not found" });
+    res.status(404).json({ message: "Route not found", requestId: req.requestId });
 });
 
 app.use((err, req, res, next) => {
@@ -132,8 +162,15 @@ app.use((err, req, res, next) => {
         return res.status(400).json({ message: "Invalid JSON body" });
     }
 
-    console.error(err);
-    res.status(500).json({ message: "Internal server error" });
+    const requestId = req.requestId || randomUUID();
+    logger.error("request_failed", {
+        requestId,
+        method: req.method,
+        path: req.path,
+        error: err.message,
+        ...(process.env.NODE_ENV === "development" ? { stack: err.stack } : {})
+    });
+    res.status(500).json({ message: "Internal server error", requestId });
 });
 
 module.exports = app;

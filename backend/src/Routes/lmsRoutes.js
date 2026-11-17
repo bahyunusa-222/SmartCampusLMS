@@ -1,8 +1,17 @@
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const router = express.Router();
 const authMiddleware = require("../middlewares/authMiddleware");
 const requireRole = require("../middlewares/roleMiddleware");
 const lmsController = require("../controllers/lmsController");
+const pushController = require("../controllers/pushController");
+const pushDeviceLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Too many device registration requests. Try again later." }
+});
 
 router.use(authMiddleware);
 
@@ -33,6 +42,8 @@ router.post("/courses/:courseId/lecturer-messages", requireRole("lecturer", "stu
 router.get("/notifications", lmsController.listNotifications);
 router.patch("/notifications/read-all", lmsController.markAllNotificationsRead);
 router.patch("/notifications/:id/read", lmsController.markNotificationRead);
+router.post("/notifications/devices", pushDeviceLimiter, pushController.registerDevice);
+router.delete("/notifications/devices", pushDeviceLimiter, pushController.removeDevice);
 
 router.get("/calendar", lmsController.listMyCalendar);
 router.get("/courses/:courseId/calendar", lmsController.listCalendarEvents);

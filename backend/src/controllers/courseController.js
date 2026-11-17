@@ -20,6 +20,7 @@ const QuizAssessment = require("../models/QuizAssessment");
 const { sequelize } = require("../config/db");
 const recordAuditLog = require("../utils/recordAuditLog");
 const materialUpload = require("../utils/materialUpload");
+const { attachFileReference, removeResourceReferences } = require("../utils/fileReferences");
 const { removeStoredUpload } = require("../utils/storedUpload");
 const { Op, fn, col } = require("sequelize");
 const {
@@ -175,7 +176,7 @@ exports.createCourse = async (req, res) => {
                         departmentId: validDepartmentId
                     }, { transaction });
                     if (introContent || uploadedFile) {
-                        await Lesson.create({
+                        const lesson = await Lesson.create({
                             title: uploadedFile?.fileName || "Course introduction",
                             content: introContent || "Download the attached course material.",
                             fileUrl: uploadedFile?.fileUrl || null,
@@ -187,6 +188,15 @@ exports.createCourse = async (req, res) => {
                             courseId: created.id,
                             orderIndex: 0
                         }, { transaction });
+                        if (uploadedFile?.storedFileId) {
+                            await attachFileReference({
+                                fileId: uploadedFile.storedFileId,
+                                resourceType: "lesson",
+                                resourceId: lesson.id,
+                                ownerId: req.user.id,
+                                transaction
+                            });
+                        }
                     }
                     await recordAuditLog({
                         actorId: req.user.id,
@@ -352,7 +362,7 @@ exports.deleteCourse = async (req, res) => {
         const assessmentIds = assessments.map((assessment) => assessment.id);
         const submissions = assignmentIds.length
             ? await Submission.findAll({
-                where: { assignmentId: assignmentIds }, attributes: ["fileUrl"], transaction
+                where: { assignmentId: assignmentIds }, attributes: ["id", "fileUrl"], transaction
             })
             : [];
         const uploadedFiles = [
@@ -361,6 +371,20 @@ exports.deleteCourse = async (req, res) => {
             ...assignments.map((assignment) => assignment.fileUrl),
             ...submissions.map((submission) => submission.fileUrl)
         ].filter(Boolean);
+
+        for (const lessonId of lessonIds) {
+            await removeResourceReferences({ resourceType: "lesson", resourceId: lessonId, transaction });
+        }
+        for (const assignmentId of assignmentIds) {
+            await removeResourceReferences({ resourceType: "assignment", resourceId: assignmentId, transaction });
+        }
+        for (const submission of submissions) {
+            await removeResourceReferences({
+                resourceType: "submission",
+                resourceId: submission.id,
+                transaction
+            });
+        }
 
         await Promise.all([
             lessonIds.length && LessonProgress.destroy({ where: { lessonId: lessonIds }, transaction }),

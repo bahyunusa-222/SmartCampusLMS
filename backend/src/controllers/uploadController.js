@@ -74,6 +74,13 @@ exports.signUpload = async (req, res, next) => {
             }))) {
                 return deny(res, 403, "Create your chat username before uploading an attachment.");
             }
+        } else if (purpose === "profile-image") {
+            if (!(await ChatProfile.findOne({
+                where: { userId: req.user.id },
+                attributes: ["id"]
+            }))) {
+                return deny(res, 403, "Create your chat username before uploading a profile image.");
+            }
         } else {
             return deny(res, 400, "Unsupported file upload purpose.");
         }
@@ -91,7 +98,8 @@ exports.signUpload = async (req, res, next) => {
         } catch (error) {
             if (error.message.startsWith("Choose a valid") ||
                 error.message.startsWith("Unsupported") ||
-                error.message.startsWith("Files must")) {
+                error.message.startsWith("Files must") ||
+                error.message.startsWith("A valid file owner")) {
                 return deny(res, 400, error.message);
             }
             console.error("Unable to create signed storage upload:", error.message);

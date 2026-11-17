@@ -1,19 +1,23 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const { isValidJwtSecret } = require("../utils/authConfiguration");
+const { readSessionCookie } = require("../utils/sessionCookie");
 
 require("../config/env");
 
 const authMiddleware = async (req, res, next) => {
     const authHeader = req.headers.authorization;
 
-    if (typeof authHeader !== "string" || !authHeader) {
+    if ((typeof authHeader !== "string" || !authHeader) && !req.headers.cookie) {
         return res.status(401).json({ message: "No token provided" });
     }
 
-    const tokenMatch = authHeader.match(/^Bearer\s+([^\s]+)$/i);
-    if (!tokenMatch || tokenMatch[1].length > 8192) {
-        return res.status(401).json({ message: "A valid bearer token is required" });
+    const tokenMatch = typeof authHeader === "string" && authHeader
+        ? authHeader.match(/^Bearer\s+([^\s]+)$/i)
+        : null;
+    const token = tokenMatch?.[1] || readSessionCookie(req.headers.cookie);
+    if (!token || token.length > 8192) {
+        return res.status(401).json({ message: "A valid session is required" });
     }
 
     if (!isValidJwtSecret(process.env.JWT_SECRET)) {
@@ -23,7 +27,7 @@ const authMiddleware = async (req, res, next) => {
 
     let payload;
     try {
-        payload = jwt.verify(tokenMatch[1], process.env.JWT_SECRET, { algorithms: ["HS256"] });
+        payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });
     } catch (error) {
         return res.status(401).json({ message: "Invalid token" });
     }

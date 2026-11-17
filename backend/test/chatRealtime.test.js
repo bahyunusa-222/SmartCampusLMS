@@ -68,3 +68,40 @@ test("private events target the selected profile and removed course membership s
     closeRecipient();
     closeFormerMember();
 });
+
+test("presence reports online on the first connection and offline after the last closes", () => {
+    const first = captureStream();
+    const observer = captureStream();
+    const closeObserver = subscribe({
+        userId: 9302,
+        profileId: "presence-observer",
+        courseIds: [31],
+        response: observer
+    });
+    const closeFirst = subscribe({
+        userId: 9301,
+        profileId: "presence-first",
+        courseIds: [31],
+        response: first
+    });
+    const closeSecond = subscribe({
+        userId: 9301,
+        profileId: "presence-first",
+        courseIds: [31],
+        response: captureStream()
+    });
+
+    assert.ok(observer.events.some((event) =>
+        event.includes('"profileId":"presence-first","online":true')
+    ));
+    closeFirst();
+    assert.ok(!observer.events.some((event) =>
+        event.includes('"profileId":"presence-first","online":false')
+    ));
+    closeSecond();
+    assert.ok(observer.events.some((event) =>
+        event.includes('"profileId":"presence-first","online":false')
+    ));
+
+    closeObserver();
+});

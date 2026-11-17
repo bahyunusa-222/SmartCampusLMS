@@ -27,9 +27,21 @@ const normalizeName = (value) => {
     return name;
 };
 
+const compromisedPasswords = new Set([
+    "password1234",
+    "password123456",
+    "123456789012",
+    "qwerty123456",
+    "letmein123456",
+    "welcome123456",
+    "smartcampus123"
+]);
+
 const validatePassword = (value) => typeof value === "string" &&
-    value.length >= 6 &&
-    Buffer.byteLength(value, "utf8") <= 72;
+    [...value].length >= 12 &&
+    [...value].length <= 128 &&
+    Buffer.byteLength(value, "utf8") <= 1024 &&
+    !compromisedPasswords.has(value.toLowerCase());
 
 const normalizeStudentId = (value) => {
     if (typeof value !== "string") return null;
@@ -52,5 +64,6 @@ module.exports = {
     normalizeName,
     normalizePhone,
     normalizeStudentId,
-    validatePassword
+    validatePassword,
+    compromisedPasswords
 };

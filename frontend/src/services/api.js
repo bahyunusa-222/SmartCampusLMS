@@ -6,11 +6,19 @@ import {
     readOfflineResponse,
     saveOfflineResponse
 } from "./offlineCache";
+import { readVisitorConsent, TERMS_VERSION } from "../utils/visitorConsent";
 
 const backgroundRefreshes = new Set();
+const termsProtectedPaths = new Set([
+    "/auth/login",
+    "/auth/register",
+    "/auth/google/login",
+    "/auth/google/register"
+]);
 const API = axios.create({
     baseURL: `${API_BASE}/api`,
     timeout: 90000,
+    withCredentials: true,
     headers: {
         "Content-Type": "application/json"
     }
@@ -116,10 +124,9 @@ API.interceptors.request.use(
             return Promise.reject(error);
         }
 
-        const token = localStorage.getItem("token");
-
-        if (token) {
-            config.headers.Authorization = `Bearer ${token}`;
+        if (termsProtectedPaths.has(config.url) &&
+            readVisitorConsent()?.termsVersion === TERMS_VERSION) {
+            config.headers.set("X-SmartCampus-Terms-Version", TERMS_VERSION);
         }
 
         return config;
@@ -141,7 +148,6 @@ API.interceptors.response.use(
     },
     (error) => {
         if (error.response?.status === 401) {
-            localStorage.removeItem("token");
             localStorage.removeItem("user");
             window.dispatchEvent(new Event("smartcampus:account-changed"));
 

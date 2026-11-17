@@ -6,16 +6,34 @@ process.env.DB_PASSWORD = "test";
 const { afterEach, beforeEach, test } = require("node:test");
 const assert = require("node:assert/strict");
 const bcrypt = require("bcrypt");
+const argon2 = require("argon2");
+const crypto = require("node:crypto");
+const { sequelize } = require("../src/config/db");
 const User = require("../src/models/User");
 const School = require("../src/models/School");
 const Department = require("../src/models/Department");
+const EmailVerificationToken = require("../src/models/EmailVerificationToken");
+const SecurityEvent = require("../src/models/SecurityEvent");
+const ChatProfile = require("../src/models/ChatProfile");
+const ChatPresence = require("../src/models/ChatPresence");
+const emailService = require("../src/utils/emailService");
+const originalSendAppEmail = emailService.sendAppEmail;
+const originalTransaction = sequelize.transaction;
+emailService.sendAppEmail = async () => {};
 const authController = require("../src/controllers/authController");
 
 const originalFindOne = User.findOne;
 const originalFindByPk = User.findByPk;
+const originalUserUpdate = User.update;
 const originalCreate = User.create;
+const originalUnscoped = User.unscoped;
+const originalVerificationUpsert = EmailVerificationToken.upsert;
+const originalVerificationFindOne = EmailVerificationToken.findOne;
+const originalSecurityEventCreate = SecurityEvent.create;
 const originalSchoolFindByPk = School.findByPk;
 const originalDepartmentFindOne = Department.findOne;
+const originalChatProfileFindOne = ChatProfile.findOne;
+const originalChatPresenceDestroy = ChatPresence.destroy;
 const originalJwtSecret = process.env.JWT_SECRET;
 const originalGoogleClientId = process.env.GOOGLE_CLIENT_ID;
 const originalFetch = global.fetch;
@@ -24,9 +42,18 @@ process.env.JWT_SECRET = "test-jwt-secret-for-account-registration";
 afterEach(() => {
     User.findOne = originalFindOne;
     User.findByPk = originalFindByPk;
+    User.update = originalUserUpdate;
     User.create = originalCreate;
+    User.unscoped = originalUnscoped;
+    EmailVerificationToken.upsert = originalVerificationUpsert;
+    EmailVerificationToken.findOne = originalVerificationFindOne;
+    SecurityEvent.create = originalSecurityEventCreate;
+    emailService.sendAppEmail = originalSendAppEmail;
+    sequelize.transaction = originalTransaction;
     School.findByPk = originalSchoolFindByPk;
     Department.findOne = originalDepartmentFindOne;
+    ChatProfile.findOne = originalChatProfileFindOne;
+    ChatPresence.destroy = originalChatPresenceDestroy;
     global.fetch = originalFetch;
     if (originalJwtSecret === undefined) {
         delete process.env.JWT_SECRET;
@@ -41,8 +68,17 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+    sequelize.transaction = async (callback) => callback({ LOCK: { UPDATE: "UPDATE" } });
+    User.unscoped = () => ({
+        findOne: (...args) => User.findOne(...args),
+        findByPk: (...args) => User.findByPk(...args)
+    });
+    EmailVerificationToken.upsert = async () => [];
+    SecurityEvent.create = async () => {};
     School.findByPk = async (id) => ({ id: Number(id) });
     Department.findOne = async ({ where }) => ({ id: Number(where.id), schoolId: Number(where.schoolId) });
+    ChatProfile.findOne = async () => null;
+    ChatPresence.destroy = async () => [0];
 });
 
 const createResponse = () => ({
@@ -59,6 +95,14 @@ const createResponse = () => ({
     },
     json(body) {
         this.body = body;
+        return this;
+    },
+    cookie(name, value, options) {
+        this.cookies = { ...(this.cookies || {}), [name]: { value, options } };
+        return this;
+    },
+    clearCookie(name, options) {
+        this.clearedCookie = { name, options };
         return this;
     }
 });
@@ -111,7 +155,7 @@ test("logout reports when the user no longer exists", async () => {
     assert.deepEqual(response.body, { message: "User no longer exists" });
 });
 
-test("email registration creates a student account without requiring a phone number", async () => {
+test("email registration creates a student account that can sign in without email verification", async () => {
     let createdUser;
     User.findOne = async ({ where }) => {
         assert.deepEqual(where, { email: "student@example.edu" });
@@ -153,9 +197,13 @@ test("email registration creates a student account without requiring a phone num
     assert.equal(createdUser.matNumber, "STU-2026");
     assert.equal(createdUser.phone, null);
     assert.equal(createdUser.passwordLoginEnabled, true);
-    assert.equal(await bcrypt.compare("student-password", createdUser.password), true);
-    assert.equal(response.body.user.phone, null);
-    assert.ok(response.body.token);
+    assert.match(createdUser.password, /^\$argon2id\$/);
+    assert.equal(await argon2.verify(createdUser.password, "student-password"), true);
+    assert.equal(createdUser.emailVerified, false);
+    assert.equal(response.body.verificationRequired, false);
+    assert.match(response.body.message, /sign in now; email verification is optional/i);
+    assert.equal(response.body.token, undefined);
+    assert.equal(response.body.user, undefined);
 });
 
 test("email registration creates lecturer accounts without student-only details", async () => {
@@ -194,8 +242,11 @@ test("email registration creates lecturer accounts without student-only details"
     assert.equal(createdUser.matNumber, null);
     assert.equal(createdUser.phone, null);
     assert.equal(createdUser.passwordLoginEnabled, true);
-    assert.equal(await bcrypt.compare("lecturer-password", createdUser.password), true);
-    assert.ok(response.body.token);
+    assert.match(createdUser.password, /^\$argon2id\$/);
+    assert.equal(await argon2.verify(createdUser.password, "lecturer-password"), true);
+    assert.equal(createdUser.emailVerified, false);
+    assert.equal(response.body.verificationRequired, false);
+    assert.equal(response.body.token, undefined);
 });
 
 test("email registration rejects an email that already exists regardless of input casing", async () => {
@@ -257,6 +308,129 @@ test("password reset rejects mismatched password confirmation on the backend", a
     assert.match(response.body.message, /passwords do not match/i);
 });
 
+test("email verification consumes a stored hash once and marks the account verified", async () => {
+    const rawToken = "a".repeat(64);
+    const user = {
+        id: 33,
+        emailVerified: false,
+        update: async (values) => { Object.assign(user, values); }
+    };
+    let tokenRecordDestroyed = false;
+    let lookup;
+    EmailVerificationToken.findOne = async (options) => {
+        lookup = options;
+        return { userId: user.id, destroy: async () => { tokenRecordDestroyed = true; } };
+    };
+    User.findByPk = async () => user;
+    SecurityEvent.create = async () => {};
+    const response = createResponse();
+
+    await authController.verifyEmail({ body: { token: rawToken } }, response);
+
+    assert.equal(lookup.where.tokenHash, crypto.createHash("sha256").update(rawToken).digest("hex"));
+    assert.equal(lookup.where.tokenHash.includes(rawToken), false);
+    assert.equal(user.emailVerified, true);
+    assert.equal(tokenRecordDestroyed, true);
+    assert.equal(response.statusCode, 200);
+});
+
+test("password reset stores Argon2id and invalidates the reset token and prior sessions", async () => {
+    let updateValues;
+    User.findOne = async () => ({ id: 34, passwordLoginEnabled: true });
+    User.update = async (values) => {
+        updateValues = values;
+        return [1];
+    };
+    SecurityEvent.create = async () => {};
+    const response = createResponse();
+
+    await authController.resetPassword({
+        body: {
+            token: "b".repeat(64),
+            newPassword: "A safer long passphrase",
+            confirmPassword: "A safer long passphrase"
+        }
+    }, response);
+
+    assert.match(updateValues.password, /^\$argon2id\$/);
+    assert.equal(await argon2.verify(updateValues.password, "A safer long passphrase"), true);
+    assert.equal(updateValues.passwordResetTokenHash, null);
+    assert.equal(updateValues.passwordResetExpiresAt, null);
+    assert.equal(updateValues.tokenVersion.val, "tokenVersion + 1");
+    assert.equal(response.statusCode, 200);
+});
+
+test("password change verifies the current hash and revokes existing sessions", async () => {
+    const user = {
+        id: 35,
+        passwordLoginEnabled: true,
+        password: await bcrypt.hash("current legacy password", 10),
+        tokenVersion: 3,
+        passwordResetTokenHash: "old-reset-hash",
+        passwordResetExpiresAt: new Date(),
+        save: async () => {}
+    };
+    User.findByPk = async () => user;
+    SecurityEvent.create = async () => {};
+    const response = createResponse();
+
+    await authController.updatePassword({
+        user: { id: user.id },
+        body: {
+            currentPassword: "current legacy password",
+            newPassword: "A safer long passphrase"
+        }
+    }, response);
+
+    assert.match(user.password, /^\$argon2id\$/);
+    assert.equal(await argon2.verify(user.password, "A safer long passphrase"), true);
+    assert.equal(user.tokenVersion, 4);
+    assert.equal(user.passwordResetTokenHash, null);
+    assert.equal(user.passwordResetExpiresAt, null);
+    assert.equal(response.statusCode, 200);
+});
+
+test("email address changes require reauthentication and begin verification", async () => {
+    const user = {
+        id: 36,
+        fullName: "Lecturer Example",
+        email: "old@example.edu",
+        role: "lecturer",
+        passwordLoginEnabled: true,
+        emailVerified: true,
+        passwordResetTokenHash: "reset",
+        passwordResetExpiresAt: new Date(),
+        save: async () => {},
+        toJSON() { return { ...this }; }
+    };
+    const credentialUser = {
+        password: await bcrypt.hash("current password", 10)
+    };
+    let verificationValues;
+    User.findOne = async () => null;
+    User.findByPk = async () => user;
+    User.unscoped = () => ({ findByPk: async () => credentialUser });
+    EmailVerificationToken.upsert = async (values) => { verificationValues = values; };
+    SecurityEvent.create = async () => {};
+    const response = createResponse();
+
+    await authController.updateProfile({
+        user: { id: user.id },
+        body: {
+            fullName: user.fullName,
+            email: "new@example.edu",
+            currentPassword: "current password"
+        }
+    }, response);
+
+    assert.equal(user.email, "new@example.edu", JSON.stringify(response.body));
+    assert.equal(user.emailVerified, false);
+    assert.equal(verificationValues.userId, user.id);
+    assert.match(verificationValues.tokenHash, /^[a-f0-9]{64}$/);
+    assert.match(response.body.message, /verify your new email/i);
+    assert.equal(response.body.user.password, undefined);
+});
+
 test("password login refuses to issue a session with an insecure JWT secret", async () => {
     process.env.JWT_SECRET = "change_this_to_a_long_random_secret";
     const password = "account-password";
@@ -269,6 +443,7 @@ test("password login refuses to issue a session with an insecure JWT secret", as
         password: await bcrypt.hash(password, 10)
     };
     User.findOne = async () => user;
+    user.save = async () => {};
     const response = createResponse();
 
     await authController.login({
@@ -350,7 +525,9 @@ test("Google registration signs in an existing account instead of creating a dup
         fullName: "Existing User",
         email: "existing@example.edu",
         googleId: "google-existing-123",
+        emailVerified: false,
         role: "student",
+        save: async () => {},
         toJSON() {
             return { ...this };
         }
@@ -365,6 +542,7 @@ test("Google registration signs in an existing account instead of creating a dup
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.user.role, "student");
+    assert.equal(existingUser.emailVerified, true);
     assert.ok(response.body.token);
 });
 
@@ -426,7 +604,9 @@ for (const role of ["student", "lecturer"]) {
             email: `${role}@example.edu`,
             role,
             passwordLoginEnabled: true,
+            emailVerified: false,
             password: await bcrypt.hash(password, 10),
+            save: async () => {},
             toJSON() {
                 return { ...this };
             }
@@ -438,14 +618,46 @@ for (const role of ["student", "lecturer"]) {
 
         const response = createResponse();
         await authController.login({
-            body: { email: user.email, password }
+            body: { email: user.email, password },
+            headers: { origin: "https://smartcampus.example" }
         }, response);
 
         assert.equal(response.statusCode, 200);
         assert.equal(response.body.user.role, role);
-        assert.ok(response.body.token);
+        assert.match(user.password, /^\$argon2id\$/);
+        assert.equal(response.body.user.password, undefined);
+        assert.equal(response.body.user.passwordResetTokenHash, undefined);
+        assert.equal(response.body.token, undefined);
+        assert.equal(response.cookies.smartcampus_session.options.httpOnly, true);
+        assert.equal(response.cookies.smartcampus_session.options.path, "/api");
     });
 }
+
+test("native login returns a bearer token in addition to the session cookie", async () => {
+    const password = "account-password";
+    const user = {
+        id: 27,
+        tokenVersion: 0,
+        fullName: "Native Student",
+        email: "native@example.edu",
+        role: "student",
+        passwordLoginEnabled: true,
+        password: await bcrypt.hash(password, 10),
+        save: async () => {},
+        toJSON() { return { ...this }; }
+    };
+    User.findOne = async () => user;
+    const response = createResponse();
+
+    await authController.login({
+        body: { email: user.email, password },
+        headers: { origin: "https://smartcampus.example", "x-smartcampus-client": "mobile" },
+        get(name) { return this.headers[name.toLowerCase()]; }
+    }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.ok(response.body.token);
+});
 
 test("email registration requires a student matriculation number", async () => {
     User.findOne = async () => assert.fail("Invalid student details should be rejected before lookup");

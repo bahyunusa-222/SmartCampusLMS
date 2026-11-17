@@ -2,6 +2,7 @@ const { Op } = require("sequelize");
 const jwt = require("jsonwebtoken");
 const { sequelize } = require("../config/db");
 const ChatProfile = require("../models/ChatProfile");
+const ChatPresence = require("../models/ChatPresence");
 const ChatProfilePermission = require("../models/ChatProfilePermission");
 const ChatMessage = require("../models/ChatMessage");
 const ChatMessageReaction = require("../models/ChatMessageReaction");
@@ -14,6 +15,8 @@ const ChatSavedMessage = require("../models/ChatSavedMessage");
 const ChatHiddenMessage = require("../models/ChatHiddenMessage");
 const chatRealtime = require("../utils/chatRealtime");
 const objectStorage = require("../utils/objectStorage");
+const { attachFileReference, findFileReference, removeFileReference } = require("../utils/fileReferences");
+const { objectKeyFor } = require("../utils/storedUpload");
 
 const messageTypes = new Set(["text", "emoji", "gif", "sticker", "voice", "image", "file", "contact"]);
 const profileFields = ["id", "username", "fullName", "avatarUrl", "about"];
@@ -24,6 +27,7 @@ const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "ima
 const reactionEmojis = new Set(["👍", "❤️", "😂", "😮", "😢", "🙏"]);
 const developerEmail = "bahy1878@gmail.com";
 const developerBio = "The brain behind SmartCampus LMS. Chat with me about the platform, feedback, or collaboration.";
+const presenceExpiryMs = 30_000;
 
 const normalizeChatUsername = (value) => {
     if (typeof value !== "string") return null;
@@ -52,9 +56,22 @@ const summarizeReactions = (reactions = [], profileId) => {
     return [...summaries.values()];
 };
 
-const serializeMessage = (message, profileId) => {
+const serializeMessage = async (message, profileId) => {
     const data = typeof message.toJSON === "function" ? message.toJSON() : { ...message };
     data.reactions = summarizeReactions(data.reactions, profileId);
+    if (data.sender) data.sender = await safeProfile(data.sender);
+    if (data.receiver) data.receiver = await safeProfile(data.receiver);
+    if (data.type === "contact") {
+        try {
+            const contact = JSON.parse(data.content);
+            const key = objectKeyFor(contact.avatarUrl);
+            if (key) contact.avatarUrl = await objectStorage.signedDownloadUrl(key, "profile-image", "inline");
+            data.content = JSON.stringify(contact);
+        } catch (error) {
+            if (error instanceof SyntaxError) return data;
+            throw error;
+        }
+    }
     return data;
 };
 
@@ -125,13 +142,21 @@ const hasPrivateContactApproval = async (profileId, viewerProfileId) => Boolean(
     })
 );
 
-const safeProfile = (profile) => profile && ({
-    id: profile.id,
-    username: profile.username,
-    fullName: profile.fullName,
-    avatarUrl: profile.avatarUrl,
-    about: profile.about
-});
+const safeProfile = async (profile, { signAvatar = true } = {}) => {
+    if (!profile) return null;
+    let avatarUrl = profile.avatarUrl;
+    const key = objectKeyFor(avatarUrl);
+    if (signAvatar && key) {
+        avatarUrl = await objectStorage.signedDownloadUrl(key, "profile-image", "inline");
+    }
+    return {
+        id: profile.id,
+        username: profile.username,
+        fullName: profile.fullName,
+        avatarUrl,
+        about: profile.about
+    };
+};
 
 const profileMissing = (res) => res.status(409).json({
     message: "Create your chat username before using chat.",
@@ -181,9 +206,10 @@ exports.getMe = async (req, res, next) => {
             return res.json({
                 profile: null,
                 suggestedFullName: user.fullName,
-                developerProfile: safeProfile(developerProfile),
+                developerProfile: await safeProfile(developerProfile),
                 courses: [],
-                privateChats: []
+                privateChats: [],
+                onlineProfileIds: []
             });
         }
 
@@ -256,7 +282,7 @@ exports.getMe = async (req, res, next) => {
             if (!other || seen.has(other.id)) continue;
             seen.add(other.id);
             privateChats.push({
-                profile: safeProfile(other),
+                profile: await safeProfile(other),
                 latestMessage: {
                     content: message.content,
                     type: message.type,
@@ -290,11 +316,26 @@ exports.getMe = async (req, res, next) => {
                 chat.unreadCount = unreadCountByProfile.get(chat.profile.id) || 0;
             }
         }
+        const trackedProfileIds = [...new Set([
+            ...privateChats.map((chat) => chat.profile.id),
+            ...(developerProfile && developerProfile.id !== profile.id ? [developerProfile.id] : [])
+        ])];
+        const onlineProfileIds = trackedProfileIds.length
+            ? (await ChatPresence.findAll({
+                where: {
+                    profileId: { [Op.in]: trackedProfileIds },
+                    lastSeenAt: { [Op.gte]: new Date(Date.now() - presenceExpiryMs) }
+                },
+                attributes: ["profileId"],
+                raw: true
+            })).map((entry) => entry.profileId)
+            : [];
         return res.json({
-            profile: safeProfile(profile),
-            developerProfile: safeProfile(developerProfile),
+            profile: await safeProfile(profile),
+            developerProfile: await safeProfile(developerProfile),
             courses: courseChats,
-            privateChats
+            privateChats,
+            onlineProfileIds
         });
     } catch (error) {
         return next(error);
@@ -304,7 +345,8 @@ exports.getMe = async (req, res, next) => {
 exports.saveProfile = async (req, res, next) => {
     try {
         const username = normalizeChatUsername(req.body.username);
-        const avatarUrl = req.body.avatarUrl == null || req.body.avatarUrl === "" ? null : req.body.avatarUrl;
+        let avatarUrl = req.body.avatarUrl == null || req.body.avatarUrl === "" ? null : req.body.avatarUrl;
+        let uploadedAvatar;
         const about = typeof req.body.about === "string" ? req.body.about.trim() : "";
         if (!username) {
             return res.status(400).json({
@@ -319,9 +361,30 @@ exports.saveProfile = async (req, res, next) => {
                 /^https:\/\/[^\s]+$/i.test(avatarUrl);
             const isImageData = typeof avatarUrl === "string" &&
                 /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/]+=*$/i.test(avatarUrl) &&
-                Buffer.from(avatarUrl.slice(avatarUrl.indexOf(",") + 1), "base64").length <= 128 * 1024;
+                Buffer.from(avatarUrl.slice(avatarUrl.indexOf(",") + 1), "base64").length <= objectStorage.maxProfileImageSize;
             if (!isHttpsUrl && !isImageData) {
-                return res.status(400).json({ message: "Choose a JPG, PNG, or WebP profile picture smaller than 128 KB." });
+                return res.status(400).json({
+                    message: `Choose a JPG, PNG, or WebP profile picture up to ${objectStorage.maxProfileImageSize / 1024 / 1024} MB.`
+                });
+            }
+            if (isImageData && !objectStorage.isConfigured()) {
+                return res.status(503).json({ message: "Profile image storage is temporarily unavailable." });
+            }
+            if (isImageData) {
+                const match = avatarUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,([a-z0-9+/]+=*)$/i);
+                const buffer = Buffer.from(match[2], "base64");
+                if (!objectStorage.isImageBuffer(buffer, match[1].toLowerCase())) {
+                    return res.status(400).json({ message: "The profile image contents do not match its file type." });
+                }
+                const extension = match[1].toLowerCase() === "image/jpeg" ? ".jpg"
+                    : match[1].toLowerCase() === "image/png" ? ".png" : ".webp";
+                uploadedAvatar = await objectStorage.storeBuffer({
+                    buffer,
+                    fileName: `profile${extension}`,
+                    contentType: match[1].toLowerCase(),
+                    userId: req.user.id
+                });
+                avatarUrl = uploadedAvatar.fileUrl;
             }
         }
 
@@ -341,14 +404,36 @@ exports.saveProfile = async (req, res, next) => {
                 about
             }
         });
-        if (!created) {
-            profile.username = username;
-            profile.fullName = user.fullName;
-            profile.avatarUrl = avatarUrl;
-            profile.about = about;
-            await profile.save();
-        }
-        return res.status(created ? 201 : 200).json({ profile: safeProfile(profile) });
+        const previousReference = created
+            ? null
+            : await findFileReference({ resourceType: "chat-profile", resourceId: profile.id });
+        await sequelize.transaction(async (transaction) => {
+            if (!created) {
+                profile.username = username;
+                profile.fullName = user.fullName;
+                profile.avatarUrl = avatarUrl;
+                profile.about = about;
+                await profile.save({ transaction });
+            }
+            if (previousReference && previousReference.fileId !== uploadedAvatar?.storedFileId) {
+                await removeFileReference({
+                    fileId: previousReference.fileId,
+                    resourceType: "chat-profile",
+                    resourceId: profile.id,
+                    transaction
+                });
+            }
+            if (uploadedAvatar?.storedFileId) {
+                await attachFileReference({
+                    fileId: uploadedAvatar.storedFileId,
+                    resourceType: "chat-profile",
+                    resourceId: profile.id,
+                    ownerId: req.user.id,
+                    transaction
+                });
+            }
+        });
+        return res.status(created ? 201 : 200).json({ profile: await safeProfile(profile) });
     } catch (error) {
         if (error.name === "SequelizeUniqueConstraintError") {
             return res.status(409).json({ message: "That chat username is already taken." });
@@ -425,7 +510,7 @@ exports.searchProfiles = async (req, res, next) => {
                 limit: 5,
                 order: [["username", "ASC"]]
             }) : [];
-            return res.json({ profiles: matches.map(safeProfile) });
+            return res.json({ profiles: await Promise.all(matches.map((match) => safeProfile(match))) });
         }
         const match = await ChatProfile.findOne({
             where: sequelize.where(sequelize.fn("LOWER", sequelize.col("username")), username.toLowerCase()),
@@ -434,7 +519,7 @@ exports.searchProfiles = async (req, res, next) => {
         if (!match || match.id === profile.id) {
             return res.json({ profile: null });
         }
-        return res.json({ profile: safeProfile(match) });
+        return res.json({ profile: await safeProfile(match) });
     } catch (error) {
         return next(error);
     }
@@ -486,7 +571,7 @@ exports.listCoursemates = async (req, res, next) => {
             attributes: profileFields,
             order: [["username", "ASC"]]
         }) : [];
-        return res.json({ profiles: profiles.map(safeProfile) });
+        return res.json({ profiles: await Promise.all(profiles.map((profile) => safeProfile(profile))) });
     } catch (error) {
         return next(error);
     }
@@ -559,7 +644,7 @@ exports.getSharedProfile = async (req, res, next) => {
         if (!target || target.id === viewer.id) {
             return res.status(404).json({ message: "Chat profile not found." });
         }
-        const sharedProfile = safeProfile(target);
+        const sharedProfile = await safeProfile(target);
         const visibilityScopes = contactVisibilityFields.map((field) => target[field]);
         const [isCourseMate, hasPrivateConversation, hasContactApproval] = await Promise.all([
             visibilityScopes.includes("course")
@@ -586,6 +671,45 @@ exports.getSharedProfile = async (req, res, next) => {
             }
         }
         return res.json({ profile: sharedProfile });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+exports.heartbeatPresence = async (req, res, next) => {
+    try {
+        const profile = await profileFor(req.user.id);
+        if (!profile) return profileMissing(res);
+        await ChatPresence.upsert({
+            profileId: profile.id,
+            lastSeenAt: new Date()
+        });
+        return res.status(204).end();
+    } catch (error) {
+        return next(error);
+    }
+};
+
+exports.getPresence = async (req, res, next) => {
+    try {
+        const profileId = req.params.profileId;
+        if (!/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(profileId)) {
+            return res.status(400).json({ message: "Invalid chat profile." });
+        }
+        const viewer = await profileFor(req.user.id);
+        if (!viewer) return profileMissing(res);
+        const target = await ChatProfile.findByPk(profileId, { attributes: ["id", "userId"] });
+        if (!target || target.id === viewer.id ||
+            (!(await hasSharedCourse(req.user.id, target.userId)) &&
+                !(await hasPrivateChatContact(viewer.id, target.id)))) {
+            return res.status(404).json({ message: "Chat profile not found." });
+        }
+        const presence = await ChatPresence.findByPk(target.id, { attributes: ["lastSeenAt"] });
+        const lastSeenAt = presence ? new Date(presence.lastSeenAt).getTime() : 0;
+        return res.set("Cache-Control", "no-store").json({
+            profileId: target.id,
+            online: lastSeenAt > 0 && Date.now() - lastSeenAt <= presenceExpiryMs
+        });
     } catch (error) {
         return next(error);
     }
@@ -620,11 +744,11 @@ exports.listCourseMessages = async (req, res, next) => {
             limit: 100
         });
         const unreadSince = readState?.lastReadAt ? new Date(readState.lastReadAt).getTime() : 0;
-        const messagesWithUnreadFlags = messages.map((message) => ({
-            ...serializeMessage(message, profile.id),
+        const messagesWithUnreadFlags = await Promise.all(messages.map(async (message) => ({
+            ...await serializeMessage(message, profile.id),
             isNew: message.senderProfileId !== profile.id &&
                 new Date(message.createdAt).getTime() > unreadSince
-        }));
+        })));
         await ChatReadState.upsert({
             profileId: profile.id,
             courseId,
@@ -688,14 +812,14 @@ exports.listPrivateMessages = async (req, res, next) => {
             });
         }
         const incomingIds = new Set(incomingMessages.map((message) => message.id));
-        return res.json(messages.reverse().map((message) => {
-            const data = serializeMessage(message, profile.id);
+        return res.json(await Promise.all(messages.reverse().map(async (message) => {
+            const data = await serializeMessage(message, profile.id);
             if (incomingIds.has(message.id)) {
                 data.deliveredAt = message.deliveredAt || deliveredAt;
                 data.isRead = true;
             }
             return data;
-        }));
+        })));
     } catch (error) {
         return next(error);
     }
@@ -717,6 +841,8 @@ exports.sendMessage = async (req, res, next) => {
         return res.status(status).json({ message });
     };
     try {
+        let uploadedStoredFileId = null;
+        let uploadedFileUrl = null;
         if (!req.file && req.body.fileStorageKey) {
             if (!objectStorage.validateStorageKey(req.body.fileStorageKey, req.user.id)) {
                 return res.status(400).json({ message: "The uploaded attachment is invalid." });
@@ -724,6 +850,9 @@ exports.sendMessage = async (req, res, next) => {
             uploadedStorageKey = req.body.fileStorageKey;
             const uploaded = await objectStorage.resolveChatUpload(req.body, req.user.id);
             req.file = uploaded.file;
+            uploadedStoredFileId = uploaded.storedFileId;
+            uploadedFileUrl = uploaded.fileUrl;
+            uploadedStorageKey = objectKeyFor(uploaded.fileUrl) || uploadedStorageKey;
         }
         const profile = await profileFor(req.user.id);
         if (!profile) {
@@ -750,7 +879,7 @@ exports.sendMessage = async (req, res, next) => {
             });
             if (existingMessage) {
                 await cleanupStagedUpload();
-                return res.status(200).json(serializeMessage(existingMessage, profile.id));
+                return res.status(200).json(await serializeMessage(existingMessage, profile.id));
             }
         }
         const mediaGroupId = typeof req.body.mediaGroupId === "string" ? req.body.mediaGroupId : null;
@@ -780,14 +909,23 @@ exports.sendMessage = async (req, res, next) => {
                 return reject(400, "Only Tenor or Giphy media links are allowed.");
             }
         }
-        if (type === "voice" && (!allowedAudioTypes.has(req.file.mimetype) || req.file.size > 5 * 1024 * 1024)) {
+        if (type === "voice" && (!allowedAudioTypes.has(req.file.mimetype) ||
+            !objectStorage.isAudioBuffer(req.file.buffer, req.file.mimetype) || req.file.size > 5 * 1024 * 1024)) {
             return reject(400, "Voice notes must be supported audio files up to 5 MB.");
         }
-        if (type === "image" && (!allowedImageTypes.has(req.file.mimetype) || req.file.size > 5 * 1024 * 1024)) {
+        if (type === "image" && (!allowedImageTypes.has(req.file.mimetype) ||
+            !objectStorage.isImageBuffer(req.file.buffer, req.file.mimetype) || req.file.size > 5 * 1024 * 1024)) {
             return reject(400, "Images must be JPG, PNG, WebP, or GIF files up to 5 MB.");
         }
         if (type === "file" && req.file.size > 5 * 1024 * 1024) {
             return reject(400, "Files must be 5 MB or smaller.");
+        }
+        if (type === "file" && objectStorage.isDangerousChatFile(req.file.originalname, req.file.buffer)) {
+            return reject(400, "Unsupported chat attachment format.");
+        }
+        if (type === "file" && /\.pdf$/i.test(req.file.originalname) &&
+            !req.file.buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
+            return reject(400, "The PDF contents do not match the selected file type.");
         }
         if (["image", "file"].includes(type) && req.file) {
             content = req.file.originalname
@@ -854,7 +992,7 @@ exports.sendMessage = async (req, res, next) => {
             if (!contactVisibleToConversation) {
                 return reject(403, "That contact is not a coursemate of everyone in this conversation.");
             }
-            req.contactCard = safeProfile(contact);
+            req.contactCard = await safeProfile(contact, { signAvatar: false });
         }
 
         if (replyTo) {
@@ -891,6 +1029,31 @@ exports.sendMessage = async (req, res, next) => {
         const mentions = (content.match(/@([a-z0-9_]{3,20})/gi) || [])
             .map((mention) => mention.slice(1).toLowerCase())
             .filter((username) => validMentionNames.includes(username));
+        if (["voice", "image", "file"].includes(type) && req.file && !uploadedStoredFileId) {
+            if (!objectStorage.isConfigured()) {
+                if (process.env.VERCEL) {
+                    return reject(503, "File storage is temporarily unavailable.");
+                }
+            } else {
+                const stored = await objectStorage.storeChatBuffer({
+                    buffer: req.file.buffer,
+                    fileName: req.file.originalname,
+                    contentType: req.file.mimetype,
+                    userId: req.user.id,
+                    mediaType: type
+                });
+                uploadedStoredFileId = stored.storedFileId;
+                uploadedFileUrl = stored.fileUrl;
+                uploadedStorageKey = objectKeyFor(stored.fileUrl);
+                req.file = {
+                    ...req.file,
+                    buffer: stored.buffer,
+                    originalname: stored.fileName,
+                    mimetype: stored.mimeType,
+                    size: stored.fileSize
+                };
+            }
+        }
         const message = await sequelize.transaction(async (transaction) => {
             const created = await ChatMessage.create({
                 courseId,
@@ -907,8 +1070,18 @@ exports.sendMessage = async (req, res, next) => {
                 await ChatMessageMedia.create({
                     messageId: created.id,
                     contentType: req.file.mimetype,
-                    data: req.file.buffer
+                    data: uploadedStoredFileId ? null : req.file.buffer,
+                    fileUrl: uploadedFileUrl
                 }, { transaction });
+                if (uploadedStoredFileId) {
+                    await attachFileReference({
+                        fileId: uploadedStoredFileId,
+                        resourceType: "chat-message",
+                        resourceId: created.id,
+                        ownerId: req.user.id,
+                        transaction
+                    });
+                }
             }
             return created;
         });
@@ -927,19 +1100,20 @@ exports.sendMessage = async (req, res, next) => {
                 { model: ChatMessageReaction, as: "reactions", attributes: ["profileId", "emoji"] }
             ]
         });
+        const serialized = await serializeMessage(result, profile.id);
         if (courseId !== null) {
-            chatRealtime.publishCourse(courseId, "message", serializeMessage(result, profile.id));
+            chatRealtime.publishCourse(courseId, "message", serialized);
             chatRealtime.publishProfiles(
                 validMentionUserIds
                     .filter((mentioned) => mentions.includes(mentioned.username))
                     .map((mentioned) => mentioned.id),
                 "mention",
-                { message: result }
+                { message: serialized }
             );
         } else {
-            chatRealtime.publishProfiles([profile.id, receiverProfileId], "message", serializeMessage(result, profile.id));
+            chatRealtime.publishProfiles([profile.id, receiverProfileId], "message", serialized);
         }
-        return res.status(201).json(serializeMessage(result, profile.id));
+        return res.status(201).json(serialized);
     } catch (error) {
         if (uploadedStorageKey) {
             try {
@@ -1209,9 +1383,13 @@ exports.getMessageMedia = async (req, res, next) => {
         }
         const media = await ChatMessageMedia.findOne({
             where: { messageId: message.id },
-            attributes: ["contentType", "data"]
+            attributes: ["contentType", "data", "fileUrl"]
         });
         if (!media) return res.status(404).json({ message: "Message attachment not found." });
+        const data = media.fileUrl
+            ? await objectStorage.download(objectKeyFor(media.fileUrl), 5 * 1024 * 1024)
+            : media.data;
+        if (!data) return res.status(404).json({ message: "Message attachment not found." });
         const isPdf = message.type === "file" && /\.pdf$/i.test(message.content || "");
         const contentType = isPdf ? "application/pdf" : media.contentType;
         const disposition = message.type === "file" && !isPdf ? "attachment" : "inline";
@@ -1220,12 +1398,12 @@ exports.getMessageMedia = async (req, res, next) => {
             .slice(0, 255);
         res.set({
             "Content-Type": contentType,
-            "Content-Length": String(media.data.length),
+            "Content-Length": String(data.length),
             "Content-Disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff"
         });
-        return res.status(200).send(media.data);
+        return res.status(200).send(data);
     } catch (error) {
         return next(error);
     }

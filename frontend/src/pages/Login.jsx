@@ -62,7 +62,6 @@ const Login = () => {
     }, []);
 
     const finishLogin = (result) => {
-        localStorage.setItem("token", result.data.token);
         localStorage.setItem("user", JSON.stringify(result.data.user));
         window.dispatchEvent(new Event("smartcampus:account-changed"));
         const classCode = new URLSearchParams(location.search).get("join");
@@ -512,7 +511,6 @@ const Login = () => {
                                                 <input
                                                     type="password"
                                                     autoComplete="new-password"
-                                                    minLength={6}
                                                     required
                                                     value={newPassword}
                                                     onChange={(event) => setNewPassword(event.target.value)}
@@ -523,7 +521,6 @@ const Login = () => {
                                                 <input
                                                     type="password"
                                                     autoComplete="new-password"
-                                                    minLength={6}
                                                     required
                                                     value={confirmPassword}
                                                     onChange={(event) => setConfirmPassword(event.target.value)}

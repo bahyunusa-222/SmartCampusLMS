@@ -114,7 +114,7 @@ test("database connection pool defaults stay small for Supabase pooler limits", 
             DATABASE_URL: "postgresql://test:test@db.example.com:6543/postgres",
             VERCEL: "1"
         });
-        assert.equal(vercelSequelize.options.pool.max, 1);
+        assert.equal(vercelSequelize.options.pool.max, 2);
     });
 
     test("database connection pool limits can be explicitly configured", () => {

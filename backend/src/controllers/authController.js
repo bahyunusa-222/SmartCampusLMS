@@ -1,13 +1,20 @@
 const { Op } = require("sequelize");
-const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const { sequelize } = require("../config/db");
 const User = require("../models/User");
+const ChatProfile = require("../models/ChatProfile");
+const ChatPresence = require("../models/ChatPresence");
+const EmailVerificationToken = require("../models/EmailVerificationToken");
 const Course = require("../models/Course");
 const School = require("../models/School");
 const Department = require("../models/Department");
 const sanitizeUser = require("../utils/sanitizeUser");
 const { isValidJwtSecret } = require("../utils/authConfiguration");
+const { hashPassword, verifyPassword, needsRehash } = require("../utils/passwordSecurity");
+const { sendAppEmail } = require("../utils/emailService");
+const recordSecurityEvent = require("../utils/recordSecurityEvent");
+const { cookieName, sessionCookieOptions, clearSessionCookie } = require("../utils/sessionCookie");
 const {
     normalizeEmail,
     normalizeName,
@@ -19,6 +26,25 @@ const {
 require("../config/env");
 
 const passwordRecoveryMessage = "If an eligible account exists, recovery instructions will be sent.";
+const verificationMessage = "If an unverified account exists for that address, verification instructions will be sent.";
+
+const createEmailVerification = async (user, transaction) => {
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    await EmailVerificationToken.upsert({
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000)
+    }, { transaction });
+    const configuredOrigin = (process.env.CLIENT_URL || "").split(",")[0].trim();
+    const origin = configuredOrigin || "http://localhost:5173";
+    const url = new URL("/verify-email", origin);
+    if (process.env.NODE_ENV === "production" && url.protocol !== "https:") {
+        throw new Error("Email verification requires an HTTPS frontend origin.");
+    }
+    url.hash = new URLSearchParams({ token }).toString();
+    return { url: url.href };
+};
 
 const getAcademicPlacement = async (schoolId, departmentId) => {
     const parsedSchoolId = Number(schoolId);
@@ -40,6 +66,62 @@ const getAcademicPlacement = async (schoolId, departmentId) => {
 exports.getAuthConfig = (req, res) => {
     res.set("Cache-Control", "no-store");
     return res.json({ googleClientId: process.env.GOOGLE_CLIENT_ID || null });
+};
+
+exports.verifyEmail = async (req, res) => {
+    const token = req.body.token;
+    if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
+        return res.status(400).json({ message: "This verification link is invalid or has expired." });
+    }
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    try {
+        const verifiedUserId = await sequelize.transaction(async (transaction) => {
+            const record = await EmailVerificationToken.findOne({
+                where: { tokenHash, expiresAt: { [Op.gt]: new Date() } },
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+            if (!record) return null;
+            const user = await User.findByPk(record.userId, { transaction, lock: transaction.LOCK.UPDATE });
+            if (!user || user.emailVerified) {
+                await record.destroy({ transaction });
+                return null;
+            }
+            await user.update({ emailVerified: true }, { transaction });
+            await record.destroy({ transaction });
+            return user.id;
+        });
+        if (!verifiedUserId) {
+            return res.status(400).json({ message: "This verification link is invalid or has expired." });
+        }
+        await recordSecurityEvent({ userId: verifiedUserId, eventType: "email_verified", req });
+        return res.json({ message: "Email verified. You can now sign in." });
+    } catch (error) {
+        console.error("Email verification failed:", error.message);
+        return res.status(500).json({ message: "Unable to verify your email right now." });
+    }
+};
+
+exports.resendEmailVerification = async (req, res) => {
+    const email = normalizeEmail(req.body.email);
+    if (!email) return res.status(400).json({ message: "Enter a valid email address." });
+    res.set("Cache-Control", "no-store");
+    try {
+        const user = await User.findOne({ where: { email, emailVerified: false } });
+        if (user?.passwordLoginEnabled) {
+            const verification = await createEmailVerification(user);
+            await sendAppEmail({
+                to: user.email,
+                subject: "Verify your SmartCampus email",
+                text: `Hello ${user.fullName},\n\nVerify your email address by opening this link:\n${verification.url}\n\nThis link expires in 30 minutes. If you did not create this account, you can ignore this message.`
+            });
+            await recordSecurityEvent({ userId: user.id, eventType: "email_verification_resent", req });
+        }
+        return res.status(202).json({ message: verificationMessage });
+    } catch (error) {
+        console.error("Email verification request failed:", error.message);
+        return res.status(202).json({ message: verificationMessage });
+    }
 };
 
 const getResetDeliveryConfig = () => {
@@ -71,13 +153,25 @@ const getResetDeliveryConfig = () => {
 };
 
 const deliverPasswordReset = async (delivery, email, token) => {
-    if (delivery.development) return;
-
     let resetUrl = null;
     if (token) {
-        const url = new URL(delivery.resetPageUrl);
+        const resetPageUrl = delivery.resetPageUrl ||
+            process.env.PASSWORD_RESET_PAGE_URL ||
+            `${(process.env.CLIENT_URL || "http://localhost:5173").split(",")[0].trim()}/login`;
+        const url = new URL(resetPageUrl);
         url.hash = new URLSearchParams({ resetToken: token }).toString();
         resetUrl = url.href;
+    }
+
+    if (delivery.development) {
+        if (token) {
+            await sendAppEmail({
+                to: email,
+                subject: "Reset your SmartCampus password",
+                text: `Use this link to reset your password:\n${resetUrl}\n\nThe link expires in 30 minutes. If you did not request a reset, you can ignore this message.`
+            });
+        }
+        return;
     }
 
     const response = await fetch(delivery.deliveryUrl, {
@@ -100,7 +194,7 @@ const deliverPasswordReset = async (delivery, email, token) => {
     }
 };
 
-const issueSession = (user, res, statusCode = 200) => {
+const issueSession = (user, req, res, statusCode = 200) => {
     if (!isValidJwtSecret(process.env.JWT_SECRET)) {
         console.error("JWT_SECRET is not configured");
         return res.status(500).json({ message: "Authentication is not configured" });
@@ -110,14 +204,21 @@ const issueSession = (user, res, statusCode = 200) => {
     const token = jwt.sign(
         { id: user.id, role: user.role, tokenVersion: user.tokenVersion ?? 0 },
         process.env.JWT_SECRET,
-        { expiresIn: "30d" }
+        { expiresIn: "6h" }
     );
+    res.cookie(cookieName, token, sessionCookieOptions());
 
-    return res.status(statusCode).json({
+    const response = {
         message: "Login successful",
-        token,
         user: sanitizeUser(user)
-    });
+    };
+    const requestHeader = (name) => typeof req.get === "function"
+        ? req.get(name)
+        : req.headers?.[name.toLowerCase()];
+    if (!requestHeader("origin") || requestHeader("x-smartcampus-client") === "mobile") {
+        response.token = token;
+    }
+    return res.status(statusCode).json(response);
 };
 
 const verifyGoogleCredential = async (credential) => {
@@ -142,7 +243,7 @@ const verifyGoogleCredential = async (credential) => {
                 error.name === "AbortError" || error instanceof TypeError;
             if (!transientNetworkError) throw error;
             if (attempt === 1) {
-                console.error("Google credential verification could not reach Google:", error);
+                console.error("Google credential verification could not reach Google:", error.name);
                 return {
                     error: "Google sign-in verification timed out. Check the backend's internet connection and try again.",
                     status: 503
@@ -189,7 +290,7 @@ exports.register = async (req, res) => {
         if (!normalizedName || !normalizedEmail || !validatePassword(password) ||
             !["student", "lecturer"].includes(role)) {
             return res.status(400).json({
-                message: "Enter a valid name, email, password (at least 6 characters), and account type."
+                message: "Enter a valid name, email, password (12-128 characters), and account type."
             });
         }
         if (password !== confirmPassword) {
@@ -217,25 +318,51 @@ exports.register = async (req, res) => {
             return res.status(409).json({ message: "An account with this email already exists" });
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const user = await User.create({
-            fullName: normalizedName,
-            email: normalizedEmail,
-            password: hashedPassword,
-            passwordLoginEnabled: true,
-            role,
-            schoolId: placement.schoolId,
-            departmentId: placement.departmentId,
-            matNumber: role === "student" ? normalizedMatNumber : null,
-            phone: role === "student" ? normalizedPhone : null
+        const hashedPassword = await hashPassword(password);
+        let verification;
+        const user = await sequelize.transaction(async (transaction) => {
+            const createdUser = await User.create({
+                fullName: normalizedName,
+                email: normalizedEmail,
+                password: hashedPassword,
+                passwordLoginEnabled: true,
+                emailVerified: false,
+                role,
+                schoolId: placement.schoolId,
+                departmentId: placement.departmentId,
+                matNumber: role === "student" ? normalizedMatNumber : null,
+                phone: role === "student" ? normalizedPhone : null
+            }, { transaction });
+            verification = await createEmailVerification(createdUser, transaction);
+            return createdUser;
         });
 
-        return issueSession(user, res, 201);
+        try {
+            await sendAppEmail({
+                to: user.email,
+                subject: "Verify your SmartCampus email",
+                text: `Hello ${user.fullName},\n\nVerify your email address by opening this link:\n${verification.url}\n\nThis link expires in 30 minutes. If you did not create this account, you can ignore this message.`
+            });
+        } catch (error) {
+            console.error("Email verification delivery failed:", error.message);
+            await recordSecurityEvent({ userId: user.id, eventType: "email_verification_delivery_failed", req });
+            res.set("Cache-Control", "no-store");
+            return res.status(202).json({
+                message: "Your account was created. You can sign in now; email verification is optional.",
+                verificationRequired: false
+            });
+        }
+        await recordSecurityEvent({ userId: user.id, eventType: "account_registered", req });
+        res.set("Cache-Control", "no-store");
+        return res.status(201).json({
+            message: "Account created. You can sign in now; email verification is optional.",
+            verificationRequired: false
+        });
     } catch (error) {
         if (error.name === "SequelizeUniqueConstraintError") {
             return res.status(409).json({ message: "An account with this email already exists" });
         }
-        console.error("Registration failed:", error);
+        console.error("Registration failed:", error.name);
         return res.status(500).json({ message: "Registration failed" });
     }
 };
@@ -259,9 +386,10 @@ exports.googleRegister = async (req, res) => {
             }
             if (!existingUser.googleId) {
                 existingUser.googleId = googleAccount.googleId;
-                await existingUser.save();
             }
-            return issueSession(existingUser, res);
+            existingUser.emailVerified = true;
+            await existingUser.save();
+            return issueSession(existingUser, req, res);
         }
 
         const normalizedName = role === "student" ? normalizeName(fullName) : googleAccount.fullName;
@@ -295,12 +423,13 @@ exports.googleRegister = async (req, res) => {
             }
         }
 
-        const hashedPassword = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+        const hashedPassword = await hashPassword(crypto.randomBytes(32).toString("hex"));
         const user = await User.create({
             fullName: normalizedName,
             email: googleAccount.email,
             googleId: googleAccount.googleId,
             passwordLoginEnabled: false,
+            emailVerified: true,
             password: hashedPassword,
             role,
             schoolId: placement.schoolId,
@@ -309,12 +438,12 @@ exports.googleRegister = async (req, res) => {
             phone: role === "student" ? normalizedPhone : null
         });
 
-        return issueSession(user, res, 201);
+        return issueSession(user, req, res, 201);
     } catch (error) {
         if (error.name === "SequelizeUniqueConstraintError") {
             return res.status(409).json({ message: "An account with this email already exists" });
         }
-        console.error("Registration failed:", error);
+        console.error("Registration failed:", error.name);
         return res.status(500).json({ message: "Registration failed" });
     }
 };
@@ -344,14 +473,13 @@ exports.googleLogin = async (req, res) => {
             return res.status(401).json({ message: "No account was found for this Google email" });
         }
 
-        if (!user.googleId) {
-            user.googleId = googleAccount.googleId;
-            await user.save();
-        }
+        if (!user.googleId) user.googleId = googleAccount.googleId;
+        if (!user.emailVerified) user.emailVerified = true;
+        await user.save();
 
-        return issueSession(user, res);
+        return issueSession(user, req, res);
     } catch (error) {
-        console.error("Google login failed:", error);
+        console.error("Google login failed:", error.name);
         return res.status(500).json({ message: "Google login failed" });
     }
 };
@@ -361,32 +489,50 @@ exports.login = async (req, res) => {
         const { email, password, role } = req.body;
         const normalizedEmail = normalizeEmail(email);
         if (!normalizedEmail || typeof password !== "string" || !password ||
-            Buffer.byteLength(password, "utf8") > 72) {
+            Buffer.byteLength(password, "utf8") > 1024) {
             return res.status(400).json({ message: "Enter a valid email and password" });
         }
         if (role !== undefined && !["student", "lecturer"].includes(role)) {
             return res.status(400).json({ message: "Choose a valid account type" });
         }
 
-        const user = await User.findOne({ where: { email: normalizedEmail } });
+        const user = await User.unscoped().findOne({ where: { email: normalizedEmail } });
 
         if (!user || (role && user.role !== role)) {
+            await recordSecurityEvent({
+                userId: user?.id || null,
+                eventType: "login_failed",
+                req,
+                metadata: { reason: "invalid_credentials" }
+            });
             return res.status(401).json({ message: "Invalid email or password" });
         }
         if (!user.passwordLoginEnabled) {
-            return res.status(401).json({ message: "This account signs in with Google. Continue with Google to log in." });
-        }
-
-        const isMatch = await bcrypt.compare(password, user.password);
-
-        if (!isMatch) {
+            await recordSecurityEvent({ userId: user.id, eventType: "login_failed", req });
             return res.status(401).json({ message: "Invalid email or password" });
         }
 
-        return issueSession(user, res);
+        const isMatch = await verifyPassword(password, user.password);
+
+        if (!isMatch) {
+            await recordSecurityEvent({
+                userId: user.id,
+                eventType: "login_failed",
+                req,
+                metadata: { reason: "invalid_credentials" }
+            });
+            return res.status(401).json({ message: "Invalid email or password" });
+        }
+
+        if (needsRehash(user.password)) {
+            user.password = await hashPassword(password);
+            await user.save();
+        }
+        await recordSecurityEvent({ userId: user.id, eventType: "login_succeeded", req });
+        return issueSession(user, req, res);
 
     } catch (error) {
-        console.error("Login failed:", error);
+        console.error("Login failed:", error.name);
         return res.status(500).json({ message: "Login failed" });
     }
 };
@@ -408,16 +554,22 @@ exports.requestPasswordReset = async (req, res) => {
     let user;
     try {
         user = await User.findOne({ where: { email } });
-        if (user?.passwordLoginEnabled) {
+        if (user?.passwordLoginEnabled && user.emailVerified !== false) {
             user.passwordResetTokenHash = tokenHash;
             user.passwordResetExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
             await user.save();
         }
 
-        await deliverPasswordReset(delivery, email, user?.passwordLoginEnabled ? token : null);
+        if (user?.passwordLoginEnabled && user.emailVerified !== false) {
+            await deliverPasswordReset(delivery, email, token);
+        }
+        await recordSecurityEvent({
+            userId: user?.passwordLoginEnabled ? user.id : null,
+            eventType: "password_reset_requested",
+            req
+        });
         return res.status(202).json({
-            message: passwordRecoveryMessage,
-            ...(delivery.development ? { resetToken: token } : {})
+            message: passwordRecoveryMessage
         });
     } catch {
         if (user?.passwordLoginEnabled) {
@@ -433,7 +585,7 @@ exports.requestPasswordReset = async (req, res) => {
             }
         }
         console.error("Password reset request could not be completed");
-        return res.status(503).json({ message: "Password recovery is temporarily unavailable." });
+        return res.status(202).json({ message: passwordRecoveryMessage });
     }
 };
 
@@ -460,7 +612,7 @@ exports.resetPassword = async (req, res) => {
             return res.status(400).json({ message: "This reset link is invalid or has expired." });
         }
 
-        const password = await bcrypt.hash(newPassword, 10);
+        const password = await hashPassword(newPassword);
         const [updated] = await User.update({
             password,
             passwordResetTokenHash: null,
@@ -478,9 +630,10 @@ exports.resetPassword = async (req, res) => {
             return res.status(400).json({ message: "This reset link is invalid or has expired." });
         }
 
+        await recordSecurityEvent({ userId: user.id, eventType: "password_reset_completed", req });
         return res.json({ message: "Password reset successfully. Please log in again." });
     } catch (error) {
-        console.error("Password reset failed:", error);
+        console.error("Password reset failed:", error.name);
         return res.status(500).json({ message: "Unable to reset password right now." });
     }
 };
@@ -492,16 +645,24 @@ exports.logout = async (req, res) => {
             return res.status(401).json({ message: "User no longer exists" });
         }
         await user.increment("tokenVersion");
+        const chatProfile = await ChatProfile.findOne({
+            where: { userId: user.id },
+            attributes: ["id"]
+        });
+        if (chatProfile) {
+            await ChatPresence.destroy({ where: { profileId: chatProfile.id } });
+        }
+        clearSessionCookie(res);
         return res.json({ message: "Logged out successfully" });
     } catch (error) {
-        console.error("Logout failed:", error);
+        console.error("Logout failed:", error.name);
         return res.status(500).json({ message: "Unable to log out right now." });
     }
 };
 
 exports.updateProfile = async (req, res) => {
     try {
-        const { fullName, email, matNumber, phone, schoolId, departmentId } = req.body;
+        const { fullName, email, phone, matNumber, schoolId, departmentId, currentPassword } = req.body;
         const normalizedName = normalizeName(fullName);
         const normalizedEmail = normalizeEmail(email);
         if (!normalizedName || !normalizedEmail) {
@@ -527,6 +688,17 @@ exports.updateProfile = async (req, res) => {
                 message: "The email address on a Google account cannot be changed here."
             });
         }
+        const emailChanged = normalizedEmail !== user.email;
+        if (emailChanged) {
+            if (!user.passwordLoginEnabled || typeof currentPassword !== "string" ||
+                Buffer.byteLength(currentPassword, "utf8") > 1024) {
+                return res.status(400).json({ message: "Enter your current password to change your email address." });
+            }
+            const credentialUser = await User.unscoped().findByPk(req.user.id);
+            if (!credentialUser || !await verifyPassword(currentPassword, credentialUser.password)) {
+                return res.status(400).json({ message: "Current password is incorrect." });
+            }
+        }
 
         let placement;
         if (schoolId !== undefined || departmentId !== undefined) {
@@ -540,6 +712,7 @@ exports.updateProfile = async (req, res) => {
             user.passwordResetExpiresAt = null;
         }
         user.email = normalizedEmail;
+        if (emailChanged) user.emailVerified = false;
         if (placement) {
             user.schoolId = placement.schoolId;
             user.departmentId = placement.departmentId;
@@ -556,23 +729,43 @@ exports.updateProfile = async (req, res) => {
             user.matNumber = normalizedMatNumber;
             user.phone = normalizedPhone;
         }
-        await user.save();
-        if (placement && user.role === "lecturer") {
-            await Course.update(
-                { schoolId: placement.schoolId },
-                { where: { lecturerId: user.id, schoolId: null, departmentId: null } }
-            );
+        let verification;
+        await sequelize.transaction(async (transaction) => {
+            await user.save({ transaction });
+            if (emailChanged) verification = await createEmailVerification(user, transaction);
+            if (placement && user.role === "lecturer") {
+                await Course.update(
+                    { schoolId: placement.schoolId },
+                    { where: { lecturerId: user.id, schoolId: null, departmentId: null }, transaction }
+                );
+            }
+        });
+
+        let message = "Profile updated successfully";
+        if (emailChanged) {
+            try {
+                await sendAppEmail({
+                    to: user.email,
+                    subject: "Verify your new SmartCampus email",
+                    text: `Hello ${user.fullName},\n\nVerify your new email address by opening this link:\n${verification.url}\n\nThis link expires in 30 minutes.`
+                });
+                message = "Profile updated. Verify your new email address before your next sign-in.";
+            } catch (error) {
+                console.error("Email-change verification delivery failed:", error.name);
+                message = "Profile updated, but verification email delivery failed. Request a verification email before signing in again.";
+            }
+            await recordSecurityEvent({ userId: user.id, eventType: "email_change_requested", req });
         }
 
         return res.json({
-            message: "Profile updated successfully",
+            message,
             user: sanitizeUser(user)
         });
     } catch (error) {
         if (error.name === "SequelizeUniqueConstraintError") {
             return res.status(409).json({ message: "An account with this email already exists" });
         }
-        console.error("Failed to update profile:", error);
+        console.error("Failed to update profile:", error.name);
         return res.status(500).json({ message: "Failed to update profile" });
     }
 };
@@ -585,14 +778,14 @@ exports.updatePassword = async (req, res) => {
             return res.status(400).json({ message: "Current and new passwords are required" });
         }
 
-        if (Buffer.byteLength(currentPassword, "utf8") > 72) {
+        if (Buffer.byteLength(currentPassword, "utf8") > 1024) {
             return res.status(400).json({ message: "Current password is invalid" });
         }
-        if (newPassword.length < 6 || !validatePassword(newPassword)) {
-            return res.status(400).json({ message: "New password must be 6-72 bytes" });
+        if (!validatePassword(newPassword)) {
+            return res.status(400).json({ message: "Use a password of 12-128 characters that is not on the common-password blocklist." });
         }
 
-        const user = await User.findByPk(req.user.id);
+        const user = await User.unscoped().findByPk(req.user.id);
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
@@ -602,19 +795,20 @@ exports.updatePassword = async (req, res) => {
             });
         }
 
-        const matches = await bcrypt.compare(currentPassword, user.password);
+        const matches = await verifyPassword(currentPassword, user.password);
         if (!matches) {
             return res.status(400).json({ message: "Current password is incorrect" });
         }
 
-        user.password = await bcrypt.hash(newPassword, 10);
+        user.password = await hashPassword(newPassword);
         user.tokenVersion = (user.tokenVersion ?? 0) + 1;
         user.passwordResetTokenHash = null;
         user.passwordResetExpiresAt = null;
         await user.save();
+        await recordSecurityEvent({ userId: user.id, eventType: "password_changed", req });
         return res.json({ message: "Password updated successfully. Please log in again." });
     } catch (error) {
-        console.error("Failed to update password:", error);
+        console.error("Failed to update password:", error.message);
         return res.status(500).json({ message: "Failed to update password" });
     }
 };

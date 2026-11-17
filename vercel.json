@@ -31,5 +31,15 @@
         "service": "frontend"
       }
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/internal/notifications/dispatch",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/internal/tasks/deadline-reminders",
+      "schedule": "*/15 * * * *"
+    }
   ]
 }

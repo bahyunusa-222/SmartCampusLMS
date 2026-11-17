@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { FaBars, FaBell, FaMoon, FaSignOutAlt, FaSun, FaUserCircle } from "react-icons/fa";
+import { FaBars, FaBell, FaMoon, FaSearch, FaSignOutAlt, FaSun, FaUserCircle } from "react-icons/fa";
 import { useAuth } from "../hooks/useAuth";
 import API from "../services/api";
 import { clearOfflineResponsesForAccount } from "../services/offlineCache";
@@ -21,8 +21,42 @@ const Navbar = ({ toggle, theme, toggleTheme }) => {
     const [notificationsOpen, setNotificationsOpen] = useState(false);
     const [markingAllRead, setMarkingAllRead] = useState(false);
     const [profileOpen, setProfileOpen] = useState(false);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [searchResults, setSearchResults] = useState([]);
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [searchLoading, setSearchLoading] = useState(false);
+    const [searchError, setSearchError] = useState("");
     const profileRef = useRef(null);
     const notificationRef = useRef(null);
+    const searchRef = useRef(null);
+
+    useEffect(() => {
+        const query = searchQuery.trim();
+        if (!query) return undefined;
+
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => {
+            API.get("/search", {
+                params: { q: query },
+                signal: controller.signal,
+                skipOfflineCache: true
+            })
+                .then((response) => setSearchResults(response.data.results || []))
+                .catch((error) => {
+                    if (error.code === "ERR_CANCELED") return;
+                    setSearchResults([]);
+                    setSearchError(error.response?.data?.message || "Search is temporarily unavailable.");
+                })
+                .finally(() => {
+                    if (!controller.signal.aborted) setSearchLoading(false);
+                });
+        }, 220);
+
+        return () => {
+            window.clearTimeout(timer);
+            controller.abort();
+        };
+    }, [searchQuery]);
 
     useEffect(() => {
         const updateProfilePicture = () => setProfilePicture(readProfilePicture(user?.id));
@@ -57,11 +91,13 @@ const Navbar = ({ toggle, theme, toggleTheme }) => {
         const closeOnOutsideClick = (event) => {
             if (profileRef.current && !profileRef.current.contains(event.target)) setProfileOpen(false);
             if (notificationRef.current && !notificationRef.current.contains(event.target)) setNotificationsOpen(false);
+            if (searchRef.current && !searchRef.current.contains(event.target)) setSearchOpen(false);
         };
         const closeOnEscape = (event) => {
             if (event.key === "Escape") {
                 setProfileOpen(false);
                 setNotificationsOpen(false);
+                setSearchOpen(false);
             }
         };
         document.addEventListener("pointerdown", closeOnOutsideClick);
@@ -122,17 +158,10 @@ const Navbar = ({ toggle, theme, toggleTheme }) => {
     const showNavbarWelcome = location.pathname !== "/dashboard" && Boolean(displayName);
 
     const handleLogout = () => {
-        const token = localStorage.getItem("token");
         const userId = user?.id;
-        if (token) {
-            API.post("/auth/logout", {}, {
-                headers: { Authorization: `Bearer ${token}` },
-                timeout: 10000
-            }).catch((error) => {
-                console.warn("Server-side logout could not be confirmed:", error.response?.data?.message || error.message);
-            });
-        }
-        localStorage.removeItem("token");
+        API.post("/auth/logout", {}, { timeout: 10000 }).catch((error) => {
+            console.warn("Server-side logout could not be confirmed:", error.response?.data?.message || error.message);
+        });
         localStorage.removeItem("user");
         window.dispatchEvent(new Event("smartcampus:account-changed"));
         navigate("/login", { replace: true, state: { message: "Logged out successfully." } });
@@ -160,6 +189,65 @@ const Navbar = ({ toggle, theme, toggleTheme }) => {
                     <span>LEARNING MANAGEMENT SYSTEM</span>
                 </span>
             </Link>
+            <div className="global-search-control" ref={searchRef}>
+                <FaSearch className="global-search-icon" aria-hidden="true" />
+                <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => {
+                        const value = event.target.value;
+                        setSearchQuery(value);
+                        setSearchResults([]);
+                        setSearchError("");
+                        setSearchLoading(Boolean(value.trim()));
+                        setSearchOpen(true);
+                    }}
+                    onFocus={() => setSearchOpen(true)}
+                    placeholder="Search SmartCampus"
+                    aria-label="Search courses, assignments, materials, and announcements"
+                    aria-controls="global-search-results"
+                    aria-expanded={searchOpen && Boolean(searchQuery.trim())}
+                    aria-autocomplete="list"
+                    autoComplete="off"
+                />
+                {searchOpen && Boolean(searchQuery.trim()) && (
+                    <section
+                        id="global-search-results"
+                        className="global-search-results"
+                        aria-label="Search results"
+                        aria-busy={searchLoading}
+                    >
+                        <div className="global-search-heading">
+                            <strong>Search results</strong>
+                            {searchLoading && <span>Searching...</span>}
+                        </div>
+                        {searchError ? (
+                            <p className="global-search-message" role="alert">{searchError}</p>
+                        ) : searchResults.length ? (
+                            <div className="global-search-list" role="list">
+                                {searchResults.map((result) => (
+                                    <Link
+                                        key={result.id}
+                                        to={result.url}
+                                        role="listitem"
+                                        className="global-search-result"
+                                        onClick={() => {
+                                            setSearchOpen(false);
+                                            setSearchQuery("");
+                                        }}
+                                    >
+                                        <span className="global-search-result-type">{result.type}</span>
+                                        <strong>{result.title}</strong>
+                                        {result.detail && <small>{result.detail}</small>}
+                                    </Link>
+                                ))}
+                            </div>
+                        ) : searchLoading ? null : (
+                            <p className="global-search-message">No matching courses or learning resources.</p>
+                        )}
+                    </section>
+                )}
+            </div>
             {showNavbarWelcome && (
                 <div className="navbar-welcome" aria-label={`Welcome back, ${displayName}`}>
                     <span>WELCOME BACK</span>

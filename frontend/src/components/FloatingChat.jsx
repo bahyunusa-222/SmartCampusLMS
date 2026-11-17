@@ -114,6 +114,18 @@ const readFavoriteMedia = (userId) => {
     }
 };
 
+const mergePresenceSnapshot = (current, snapshot) => {
+    const trackedProfileIds = [
+        ...(snapshot.privateChats || []).map((chat) => chat.profile.id),
+        ...(snapshot.developerProfile ? [snapshot.developerProfile.id] : [])
+    ];
+    const onlineProfileIds = new Set((snapshot.onlineProfileIds || []).map(String));
+    const next = new Set(current);
+    trackedProfileIds.forEach((profileId) => next.delete(profileId));
+    onlineProfileIds.forEach((profileId) => next.add(profileId));
+    return next;
+};
+
 const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     const [user, setUser] = useState(getUser);
     const canUseChat = canAccessChat(user);
@@ -279,11 +291,12 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             (response.data.courses || []).reduce((total, course) => total + (course.unreadCount || 0), 0) +
             (response.data.privateChats || []).reduce((total, chat) => total + (chat.unreadCount || 0), 0)
         );
+        setOnlineProfiles((current) => mergePresenceSnapshot(current, response.data));
         if (!response.data.profile) setUsername("");
     }, []);
 
     useEffect(() => {
-        if (!open || !canUseChat) return undefined;
+        if (!canUseChat) return undefined;
         let mounted = true;
         API.get("/chat/me")
             .then((response) => {
@@ -300,6 +313,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                     (response.data.courses || []).reduce((total, course) => total + (course.unreadCount || 0), 0) +
                     (response.data.privateChats || []).reduce((total, chat) => total + (chat.unreadCount || 0), 0)
                 );
+                setOnlineProfiles((current) => mergePresenceSnapshot(current, response.data));
                 if (!response.data.profile) setUsername("");
             })
             .catch((requestError) => {
@@ -518,6 +532,65 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
     }, [privateChatKey, privateChatProfileId]);
 
     useEffect(() => {
+        if (!open || !activeChat || activeChat.type !== "private" || !profile) return undefined;
+        let mounted = true;
+        const checkPresence = async () => {
+            try {
+                const response = await API.get(`/chat/presence/${encodeURIComponent(activeChat.id)}`, {
+                    skipOfflineCache: true
+                });
+                if (!mounted) return;
+                setOnlineProfiles((current) => {
+                    const next = new Set(current);
+                    if (response.data.online) next.add(activeChat.id);
+                    else next.delete(activeChat.id);
+                    return next;
+                });
+            } catch (requestError) {
+                if (!mounted) return;
+                setOnlineProfiles((current) => {
+                    const next = new Set(current);
+                    next.delete(activeChat.id);
+                    return next;
+                });
+                if (requestError.response?.status >= 500) {
+                    console.warn("Could not refresh chat presence:", requestError.message);
+                }
+            }
+        };
+        checkPresence();
+        const timer = window.setInterval(checkPresence, 3000);
+        return () => {
+            mounted = false;
+            window.clearInterval(timer);
+        };
+    }, [activeChat, open, profile]);
+
+    useEffect(() => {
+        if (!profile) return undefined;
+        let active = true;
+        const sendHeartbeat = async () => {
+            if (!navigator.onLine || !active) return;
+            try {
+                await API.put("/chat/presence/heartbeat", {}, { skipOfflineCache: true });
+            } catch (requestError) {
+                if (active && navigator.onLine) {
+                    console.warn("Chat presence heartbeat failed:", requestError.message);
+                }
+            }
+        };
+        const onOnline = () => { sendHeartbeat(); };
+        sendHeartbeat();
+        const timer = window.setInterval(sendHeartbeat, 10000);
+        window.addEventListener("online", onOnline);
+        return () => {
+            active = false;
+            window.clearInterval(timer);
+            window.removeEventListener("online", onOnline);
+        };
+    }, [profile]);
+
+    useEffect(() => {
         if (!profile) return undefined;
         const controller = new AbortController();
         const pause = (delay) => new Promise((resolve) => window.setTimeout(resolve, delay));
@@ -526,7 +599,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             while (!controller.signal.aborted) {
                 try {
                     const response = await fetch(`${API.defaults.baseURL}/chat/events`, {
-                        headers: { Authorization: `Bearer ${localStorage.getItem("token") || ""}` },
+                        credentials: "include",
                         signal: controller.signal
                     });
                     if (!response.ok || !response.body) {
@@ -558,6 +631,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                     return next;
                                 });
                             } else if (event === "message") {
+                                if (!open) continue;
                                 if (supabaseRealtimeActiveRef.current) continue;
                                 const chat = currentChatRef.current;
                                 const belongsToActive = chat?.type === "course"
@@ -626,12 +700,12 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
         return () => {
             controller.abort();
         };
-    }, [profile, loadMessages, refresh]);
+    }, [open, profile, loadMessages, refresh]);
 
     useEffect(() => {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-        if (!profile || !supabaseUrl || !anonKey) {
+        if (!open || !profile || !supabaseUrl || !anonKey) {
             supabaseRealtimeActiveRef.current = false;
             return undefined;
         }
@@ -716,7 +790,7 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
             window.clearInterval(tokenRefresh);
             if (channel && client) client.removeChannel(channel);
         };
-    }, [profile, loadMessages, refresh]);
+    }, [open, profile, loadMessages, refresh]);
 
     useEffect(() => {
         if (!open || !profile) return undefined;
@@ -1905,7 +1979,13 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                         </span>
                                         <span className="wa-conversation-main">
                                             <strong>Chat with the brain behind SmartCampus</strong>
-                                            <small>@{developerProfile.username} · {developerProfile.about}</small>
+                                            <small>
+                                                @{developerProfile.username} ·
+                                                <span className={`wa-presence${onlineProfiles.has(developerProfile.id) ? " is-online" : ""}`}>
+                                                    <i aria-hidden="true" />
+                                                    {onlineProfiles.has(developerProfile.id) ? "Online" : "Offline"}
+                                                </span>
+                                            </small>
                                         </span>
                                     </button>
                                 )}
@@ -1960,7 +2040,14 @@ const FloatingChat = ({ initialOpen = false, initialShare = null }) => {
                                                     : <FaUserCircle aria-hidden="true" />}</span>
                                                 <span className="wa-conversation-main">
                                                     <strong>{chat.profile.fullName}</strong>
-                                                    <small>@{chat.profile.username} · {messagePreview(chat.latestMessage)}</small>
+                                                    <small>
+                                                        @{chat.profile.username} ·
+                                                        <span className={`wa-presence${onlineProfiles.has(chat.profile.id) ? " is-online" : ""}`}>
+                                                            <i aria-hidden="true" />
+                                                            {onlineProfiles.has(chat.profile.id) ? "Online" : "Offline"}
+                                                        </span>
+                                                        · {messagePreview(chat.latestMessage)}
+                                                    </small>
                                                 </span>
                                                 <span className="wa-conversation-meta">
                                                     <time>{formatTime(chat.latestMessage.createdAt)}</time>

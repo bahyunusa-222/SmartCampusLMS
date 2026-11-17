@@ -8,6 +8,9 @@
     "dev": "nodemon src/server.js",
     "seed": "node scripts/seed.js",
     "reset:data": "node scripts/resetProductionData.js",
+    "storage:cleanup": "node scripts/cleanupUnreferencedFiles.js",
+    "storage:audit": "node scripts/storage-audit.js",
+    "storage:migrate-legacy": "node scripts/migrateLegacyFiles.js",
     "migrate": "node scripts/migrate.js",
     "test": "node --test"
   },
@@ -20,9 +23,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
+    "@aws-sdk/client-s3": "^3.1164.0",
+    "@aws-sdk/s3-request-presigner": "^3.1164.0",
     "@supabase/server": "^1.9.2",
     "@supabase/supabase-js": "^2.118.0",
     "adm-zip": "^0.6.1",
+    "argon2": "^0.45.2",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -39,6 +45,7 @@
     "pg": "^8.23.1",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.8",
+    "sharp": "^0.35.5",
     "xlsx": "npm:@e965/xlsx@^0.20.3"
   },
   "devDependencies": {

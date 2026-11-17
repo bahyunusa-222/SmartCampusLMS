@@ -24,7 +24,7 @@ const getStorageClient = () => {
 export const appendUploadedFile = async (formData, file, context) => {
     if (!file) return;
     const maxSize = context.purpose === "chat-media" ? chatMediaLimit : materialLimit;
-    if (file.size < 1 || file.size > maxSize) {
+    if (file.size < 1 || (!useObjectStorage && file.size > maxSize)) {
         throw new Error(`Files must be ${maxSize / 1024 / 1024} MB or smaller.`);
     }
 
@@ -38,22 +38,30 @@ export const appendUploadedFile = async (formData, file, context) => {
         formData.append(fieldName, file);
         return;
     }
-    if (!supabaseUrl || !supabaseAnonKey) {
-        throw new Error("File storage is not configured. Contact the site administrator.");
-    }
-
     const { data: signedUpload } = await API.post("/uploads/sign", {
         ...context,
         fileName: file.name,
         fileSize: file.size
     });
-    const { error } = await getStorageClient().storage
-        .from(signedUpload.bucket)
-        .uploadToSignedUrl(signedUpload.key, signedUpload.token, file, {
-            contentType: signedUpload.contentType,
-            upsert: false
+    if (signedUpload.provider === "r2") {
+        const response = await fetch(signedUpload.uploadUrl, {
+            method: signedUpload.method,
+            headers: signedUpload.headers,
+            body: file
         });
-    if (error) throw new Error(`File upload failed: ${error.message}`);
+        if (!response.ok) throw new Error(`File upload failed with status ${response.status}.`);
+    } else {
+        if (!supabaseUrl || !supabaseAnonKey) {
+            throw new Error("File storage is not configured. Contact the site administrator.");
+        }
+        const { error } = await getStorageClient().storage
+            .from(signedUpload.bucket)
+            .uploadToSignedUrl(signedUpload.key, signedUpload.token, file, {
+                contentType: signedUpload.contentType,
+                upsert: false
+            });
+        if (error) throw new Error(`File upload failed: ${error.message}`);
+    }
 
     formData.append("fileStorageKey", signedUpload.key);
     formData.append("fileName", file.name);

@@ -1,13 +1,14 @@
 import { Navigate, Outlet } from "react-router-dom";
+import VisitorConsentGate from "./VisitorConsentGate";
 
 const PublicRoute = () => {
-    const token = localStorage.getItem("token");
+    const user = localStorage.getItem("user");
 
-    if (token) {
+    if (user) {
         return <Navigate to="/dashboard" replace />;
     }
 
-    return <Outlet />;
+    return <VisitorConsentGate><Outlet /></VisitorConsentGate>;
 };
 
 export default PublicRoute;

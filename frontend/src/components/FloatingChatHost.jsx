@@ -1,7 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { FaCommentDots } from "react-icons/fa";
 import { getUser } from "../hooks/useAuth";
-import DraggableChatButton from "./DraggableChatButton";
 
 const FloatingChat = lazy(() => import("./FloatingChat"));
 const canAccessChat = (user) => user?.role === "student" ||
@@ -38,28 +36,14 @@ const FloatingChatHost = () => {
     const canUseChat = canAccessChat(user);
     if (!canUseChat) return null;
 
-    if (activated) {
-        return (
-            <Suspense fallback={null}>
-                <FloatingChat
-                    key={shareAnnouncement?.requestId || "chat"}
-                    initialOpen
-                    initialShare={shareAnnouncement}
-                />
-            </Suspense>
-        );
-    }
-
     return (
-        <DraggableChatButton
-            className="floating-chat-launcher"
-            aria-label="Open chats"
-            aria-expanded="false"
-            title="Drag to move, or tap to open chats"
-            onClick={() => setActivated(true)}
-        >
-            <FaCommentDots aria-hidden="true" />
-        </DraggableChatButton>
+        <Suspense fallback={null}>
+            <FloatingChat
+                key={shareAnnouncement?.requestId || "chat"}
+                initialOpen={activated}
+                initialShare={shareAnnouncement}
+            />
+        </Suspense>
     );
 };
 

@@ -21,6 +21,8 @@ const AnnouncementComment = require("./AnnouncementComment");
 const AnnouncementCommentReaction = require("./AnnouncementCommentReaction");
 const Message = require("./Message");
 const Notification = require("./Notification");
+const NotificationDevice = require("./NotificationDevice");
+const NotificationDelivery = require("./NotificationDelivery");
 const CalendarEvent = require("./CalendarEvent");
 const Department = require("./Department");
 const School = require("./School");
@@ -28,6 +30,7 @@ const Certificate = require("./Certificate");
 const Feedback = require("./Feedback");
 const DeadlineReminder = require("./DeadlineReminder");
 const ChatProfile = require("./ChatProfile");
+const ChatPresence = require("./ChatPresence");
 const ChatMessage = require("./ChatMessage");
 const ChatMessageReaction = require("./ChatMessageReaction");
 const ChatMessageMedia = require("./ChatMessageMedia");
@@ -35,6 +38,12 @@ const ChatReadState = require("./ChatReadState");
 const ChatSavedMessage = require("./ChatSavedMessage");
 const ChatHiddenMessage = require("./ChatHiddenMessage");
 const ChatProfilePermission = require("./ChatProfilePermission");
+const StoredFile = require("./StoredFile");
+const FileReference = require("./FileReference");
+const EmailVerificationToken = require("./EmailVerificationToken");
+const SecurityEvent = require("./SecurityEvent");
+const PrivacyRequest = require("./PrivacyRequest");
+const PrivacyConsent = require("./PrivacyConsent");
 
 User.hasMany(Feedback, { foreignKey: "userId", as: "feedback" });
 Feedback.belongsTo(User, { foreignKey: "userId", as: "user" });
@@ -135,6 +144,12 @@ Message.belongsTo(User, { foreignKey: "senderId", as: "sender" });
 Message.belongsTo(User, { foreignKey: "recipientId", as: "recipient" });
 User.hasMany(Notification, { foreignKey: "userId", as: "notifications" });
 Notification.belongsTo(User, { foreignKey: "userId", as: "user" });
+Notification.hasMany(NotificationDelivery, { foreignKey: "notificationId", as: "deliveries", onDelete: "CASCADE" });
+NotificationDelivery.belongsTo(Notification, { foreignKey: "notificationId", as: "notification" });
+NotificationDevice.hasMany(NotificationDelivery, { foreignKey: "deviceId", as: "deliveries", onDelete: "SET NULL" });
+NotificationDelivery.belongsTo(NotificationDevice, { foreignKey: "deviceId", as: "device", onDelete: "SET NULL" });
+User.hasMany(NotificationDevice, { foreignKey: "userId", as: "notificationDevices", onDelete: "CASCADE" });
+NotificationDevice.belongsTo(User, { foreignKey: "userId", as: "user" });
 Course.hasMany(CalendarEvent, { foreignKey: "courseId", as: "calendarEvents" });
 CalendarEvent.belongsTo(Course, { foreignKey: "courseId", as: "course" });
 CalendarEvent.belongsTo(User, { foreignKey: "createdById", as: "creator" });
@@ -165,6 +180,21 @@ ChatProfile.hasMany(ChatProfilePermission, { foreignKey: "profileId", as: "profi
 ChatProfilePermission.belongsTo(ChatProfile, { foreignKey: "profileId", as: "profile" });
 ChatProfile.hasMany(ChatProfilePermission, { foreignKey: "viewerProfileId", as: "viewPermissions" });
 ChatProfilePermission.belongsTo(ChatProfile, { foreignKey: "viewerProfileId", as: "viewer" });
+ChatProfile.hasOne(ChatPresence, { foreignKey: "profileId", as: "presence", onDelete: "CASCADE" });
+ChatPresence.belongsTo(ChatProfile, { foreignKey: "profileId", as: "profile", onDelete: "CASCADE" });
+
+StoredFile.hasMany(FileReference, { foreignKey: "fileId", as: "references", onDelete: "RESTRICT" });
+FileReference.belongsTo(StoredFile, { foreignKey: "fileId", as: "file" });
+User.hasMany(StoredFile, { foreignKey: "ownerId", as: "storedFiles", onDelete: "RESTRICT" });
+StoredFile.belongsTo(User, { foreignKey: "ownerId", as: "owner" });
+User.hasMany(FileReference, { foreignKey: "ownerId", as: "fileReferences", onDelete: "RESTRICT" });
+FileReference.belongsTo(User, { foreignKey: "ownerId", as: "owner" });
+User.hasMany(EmailVerificationToken, { foreignKey: "userId", as: "emailVerificationTokens", onDelete: "CASCADE" });
+EmailVerificationToken.belongsTo(User, { foreignKey: "userId", as: "user" });
+User.hasMany(PrivacyRequest, { foreignKey: "userId", as: "privacyRequests", onDelete: "RESTRICT" });
+PrivacyRequest.belongsTo(User, { foreignKey: "userId", as: "user" });
+User.hasMany(PrivacyConsent, { foreignKey: "userId", as: "privacyConsents", onDelete: "CASCADE" });
+PrivacyConsent.belongsTo(User, { foreignKey: "userId", as: "user" });
 
 module.exports = {
     User,
@@ -190,6 +220,8 @@ module.exports = {
     AnnouncementCommentReaction,
     Message,
     Notification,
+    NotificationDevice,
+    NotificationDelivery,
     CalendarEvent,
     Department,
     School,
@@ -197,11 +229,18 @@ module.exports = {
     Feedback,
     DeadlineReminder,
     ChatProfile,
+    ChatPresence,
     ChatMessage,
     ChatMessageReaction,
     ChatMessageMedia,
     ChatReadState,
     ChatSavedMessage,
     ChatHiddenMessage,
-    ChatProfilePermission
+    ChatProfilePermission,
+    StoredFile,
+    FileReference,
+    EmailVerificationToken,
+    SecurityEvent,
+    PrivacyRequest,
+    PrivacyConsent
 };

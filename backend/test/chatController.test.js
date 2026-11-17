@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const ChatProfile = require("../src/models/ChatProfile");
+const ChatPresence = require("../src/models/ChatPresence");
 const ChatProfilePermission = require("../src/models/ChatProfilePermission");
 const ChatMessage = require("../src/models/ChatMessage");
 const ChatMessageMedia = require("../src/models/ChatMessageMedia");
@@ -17,11 +18,14 @@ const ChatReadState = require("../src/models/ChatReadState");
 const Course = require("../src/models/Course");
 const { sequelize } = require("../src/config/db");
 const chatRealtime = require("../src/utils/chatRealtime");
+const objectStorage = require("../src/utils/objectStorage");
 const Enrollment = require("../src/models/Enrollment");
 const User = require("../src/models/User");
 const chatController = require("../src/controllers/chatController");
 
 const originalFindOne = ChatProfile.findOne;
+const originalPresenceFindByPk = ChatPresence.findByPk;
+const originalPresenceUpsert = ChatPresence.upsert;
 const originalProfileFindAll = ChatProfile.findAll;
 const originalFindByPk = ChatProfile.findByPk;
 const originalProfileFindOrCreate = ChatProfile.findOrCreate;
@@ -47,6 +51,7 @@ const originalEnrollmentFindAll = Enrollment.findAll;
 const originalEnrollmentFindOne = Enrollment.findOne;
 const originalUserFindByPk = User.findByPk;
 const originalUserFindOne = User.findOne;
+const originalStorageIsConfigured = objectStorage.isConfigured;
 const originalSupabaseJwtSecret = process.env.SUPABASE_JWT_SECRET;
 const originalGiphyApiKey = process.env.GIPHY_API_KEY;
 const originalTenorApiKey = process.env.TENOR_API_KEY;
@@ -54,6 +59,9 @@ const originalFetch = global.fetch;
 
 afterEach(() => {
     ChatProfile.findOne = originalFindOne;
+    ChatPresence.findAll = async () => [];
+    ChatPresence.findByPk = originalPresenceFindByPk;
+    ChatPresence.upsert = originalPresenceUpsert;
     ChatProfile.findAll = originalProfileFindAll;
     ChatProfile.findByPk = originalFindByPk;
     ChatProfile.findOrCreate = originalProfileFindOrCreate;
@@ -79,6 +87,7 @@ afterEach(() => {
     Enrollment.findOne = originalEnrollmentFindOne;
     User.findByPk = originalUserFindByPk;
     User.findOne = originalUserFindOne;
+    objectStorage.isConfigured = originalStorageIsConfigured;
     if (originalSupabaseJwtSecret === undefined) delete process.env.SUPABASE_JWT_SECRET;
     else process.env.SUPABASE_JWT_SECRET = originalSupabaseJwtSecret;
     if (originalGiphyApiKey === undefined) delete process.env.GIPHY_API_KEY;
@@ -98,7 +107,85 @@ const makeResponse = () => ({
     json(body) {
         this.body = body;
         return this;
+    },
+    set(name, value) {
+        this.headers ||= {};
+        this.headers[name] = value;
+        return this;
+    },
+    end() {
+        this.ended = true;
+        return this;
     }
+});
+
+test("presence heartbeat records the authenticated chat profile", async () => {
+    ChatProfile.findOne = async () => ({ id: "viewer-profile", userId: 7 });
+    let upserted;
+    ChatPresence.upsert = async (values) => { upserted = values; };
+    const response = makeResponse();
+
+    await chatController.heartbeatPresence({ user: { id: 7 } }, response, assert.fail);
+
+    assert.equal(response.statusCode, 204);
+    assert.equal(response.ended, true);
+    assert.equal(upserted.profileId, "viewer-profile");
+    assert.ok(upserted.lastSeenAt instanceof Date);
+});
+
+test("presence status is visible only to an authorized private chat contact", async () => {
+    const lastSeenAt = new Date();
+    ChatProfile.findOne = async () => ({ id: "viewer-profile", userId: 7 });
+    ChatProfile.findByPk = async () => ({ id: "contact-profile", userId: 8 });
+    Enrollment.findAll = async () => [];
+    ChatMessage.findOne = async ({ where }) => {
+        assert.equal(where.courseId, null);
+        return { id: "private-message" };
+    };
+    ChatPresence.findByPk = async () => ({ lastSeenAt });
+    const response = makeResponse();
+
+    await chatController.getPresence({
+        user: { id: 7 },
+        params: { profileId: "c79c323d-9e03-419e-8ee8-f2d31542d923" }
+    }, response, assert.fail);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.profileId, "contact-profile");
+    assert.equal(response.body.online, true);
+    assert.equal(response.headers["Cache-Control"], "no-store");
+});
+
+test("presence status reports offline after its heartbeat lease expires", async () => {
+    ChatProfile.findOne = async () => ({ id: "viewer-profile", userId: 7 });
+    ChatProfile.findByPk = async () => ({ id: "contact-profile", userId: 8 });
+    Enrollment.findAll = async () => [];
+    ChatMessage.findOne = async () => ({ id: "private-message" });
+    ChatPresence.findByPk = async () => ({ lastSeenAt: new Date(Date.now() - 60_000) });
+    const response = makeResponse();
+
+    await chatController.getPresence({
+        user: { id: 7 },
+        params: { profileId: "c79c323d-9e03-419e-8ee8-f2d31542d923" }
+    }, response, assert.fail);
+
+    assert.equal(response.body.online, false);
+});
+
+test("presence status does not reveal profiles without a shared course or private conversation", async () => {
+    ChatProfile.findOne = async () => ({ id: "viewer-profile", userId: 7 });
+    ChatProfile.findByPk = async () => ({ id: "unrelated-profile", userId: 8 });
+    Enrollment.findAll = async () => [];
+    ChatMessage.findOne = async () => null;
+    ChatPresence.findByPk = async () => assert.fail("Unauthorized profile presence must not be queried");
+    const response = makeResponse();
+
+    await chatController.getPresence({
+        user: { id: 7 },
+        params: { profileId: "c79c323d-9e03-419e-8ee8-f2d31542d923" }
+    }, response, assert.fail);
+
+    assert.equal(response.statusCode, 404);
 });
 
 test("private chat unread counts are loaded in one grouped query", async () => {
@@ -224,6 +311,24 @@ test("chat usernames accept punctuation and spaces while preserving entered case
 
     assert.equal(response.statusCode, 201);
     assert.equal(response.body.profile.username, "Student !+.");
+});
+
+test("profile image data is not persisted as base64 when object storage is unavailable", async () => {
+    objectStorage.isConfigured = () => false;
+    ChatProfile.findOrCreate = async () => assert.fail("Profile data must not be persisted without file storage.");
+    const response = makeResponse();
+
+    await chatController.saveProfile({
+        user: { id: 7 },
+        body: {
+            username: "student_7",
+            avatarUrl: "data:image/png;base64,AAAAAAAA",
+            about: ""
+        }
+    }, response);
+
+    assert.equal(response.statusCode, 503);
+    assert.match(response.body.message, /storage is temporarily unavailable/i);
 });
 
 test("chat username availability checks names without a profile and rejects taken names", async () => {

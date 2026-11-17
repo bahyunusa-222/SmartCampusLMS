@@ -72,9 +72,27 @@ const realtimeTokenLimiter = rateLimit({
     legacyHeaders: false,
     message: { message: "Realtime token refresh is temporarily limited." }
 });
+const presenceHeartbeatLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 12,
+    keyGenerator: (req) => String(req.user.id),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Chat presence updates are temporarily limited." }
+});
+const presenceStatusLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
+    keyGenerator: (req) => String(req.user.id),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Chat presence checks are temporarily limited." }
+});
 
 router.use(authMiddleware, chatAccessMiddleware);
 router.get("/me", chatController.getMe);
+router.put("/presence/heartbeat", presenceHeartbeatLimiter, chatController.heartbeatPresence);
+router.get("/presence/:profileId", presenceStatusLimiter, chatController.getPresence);
 router.get("/events", chatController.streamEvents);
 router.get("/realtime-token", realtimeTokenLimiter, chatController.getRealtimeToken);
 router.get("/profile/settings", chatController.getProfileSettings);

@@ -178,6 +178,7 @@ const Settings = ({ theme, setTheme }) => {
     const [gesturePreferences, setGesturePreferences] = useState(() => readGesturePreferences(user?.id));
     const [settingsSearch, setSettingsSearch] = useState("");
     const [profileStatus, setProfileStatus] = useState(null);
+    const [profileCurrentPassword, setProfileCurrentPassword] = useState("");
     const [profilePicture, setProfilePicture] = useState(() => readProfilePicture(user?.id));
     const [profilePictureError, setProfilePictureError] = useState("");
     const [passwordStatus, setPasswordStatus] = useState(null);
@@ -230,6 +231,13 @@ const Settings = ({ theme, setTheme }) => {
             description: "Manage personal information and profile picture.",
             keywords: "name email picture student id phone number",
             Icon: FaUserCircle
+        },
+        {
+            to: "/settings/privacy",
+            title: "Privacy and data",
+            description: "Download your data, review optional preferences, and submit privacy requests.",
+            keywords: "privacy data export consent access correction deletion erasure",
+            Icon: FaShieldAlt
         },
         ...(user?.passwordLoginEnabled !== false ? [{
             to: "/settings/security",
@@ -390,6 +398,8 @@ const Settings = ({ theme, setTheme }) => {
 
         try {
             const updates = { ...profile };
+            const emailChanged = profile.email !== user?.email;
+            if (emailChanged) updates.currentPassword = profileCurrentPassword;
             if (!profile.schoolId && !profile.departmentId) {
                 delete updates.schoolId;
                 delete updates.departmentId;
@@ -406,6 +416,7 @@ const Settings = ({ theme, setTheme }) => {
                 departmentId: response.data.user.departmentId ? String(response.data.user.departmentId) : ""
             });
             setProfileStatus({ type: "success", text: response.data.message });
+            setProfileCurrentPassword("");
         } catch (error) {
             setProfileStatus({
                 type: "error",
@@ -468,8 +479,10 @@ const Settings = ({ theme, setTheme }) => {
             setPasswordStatus({ type: "error", text: "The new passwords do not match." });
             return;
         }
-        if (password.newPassword.length < 6) {
-            setPasswordStatus({ type: "error", text: "Your new password must be at least 6 characters." });
+        const passwordLength = [...password.newPassword].length;
+        if (passwordLength < 12 || passwordLength > 128 ||
+            new TextEncoder().encode(password.newPassword).length > 1024) {
+            setPasswordStatus({ type: "error", text: "Use a password of 12-128 characters. Long passphrases and spaces are allowed." });
             return;
         }
 
@@ -479,7 +492,6 @@ const Settings = ({ theme, setTheme }) => {
                 currentPassword: password.currentPassword,
                 newPassword: password.newPassword
             });
-            localStorage.removeItem("token");
             localStorage.removeItem("user");
             window.dispatchEvent(new Event("smartcampus:account-changed"));
             navigate("/login", {
@@ -711,19 +723,33 @@ const Settings = ({ theme, setTheme }) => {
                         </label>
                     )}
                     {settingsSubpage === "email" && (
-                        <label>
-                            Email address
-                            <input
-                                autoComplete="email"
-                                type="email"
-                                maxLength={254}
-                                required
-                                readOnly={user?.googleLinked}
-                                value={profile.email}
-                                onChange={(event) => setProfile({ ...profile, email: event.target.value })}
-                            />
-                            {user?.googleLinked && <small className="settings-field-hint">Email is verified by your Google account and cannot be edited here.</small>}
-                        </label>
+                        <>
+                            <label>
+                                Email address
+                                <input
+                                    autoComplete="email"
+                                    type="email"
+                                    maxLength={254}
+                                    required
+                                    readOnly={user?.googleLinked}
+                                    value={profile.email}
+                                    onChange={(event) => setProfile({ ...profile, email: event.target.value })}
+                                />
+                                {user?.googleLinked && <small className="settings-field-hint">Email is verified by your Google account and cannot be edited here.</small>}
+                            </label>
+                            {!user?.googleLinked && profile.email !== user?.email && (
+                                <label>
+                                    Current password
+                                    <input
+                                        type="password"
+                                        autoComplete="current-password"
+                                        value={profileCurrentPassword}
+                                        onChange={(event) => setProfileCurrentPassword(event.target.value)}
+                                        required
+                                    />
+                                </label>
+                            )}
+                        </>
                     )}
                     {settingsSubpage === "student-id" && user?.role === "student" && (
                         <label>
@@ -812,7 +838,6 @@ const Settings = ({ theme, setTheme }) => {
                             <input
                                 autoComplete="new-password"
                                 type="password"
-                                minLength={6}
                                 required
                                 value={password.newPassword}
                                 onChange={(event) => setPassword({ ...password, newPassword: event.target.value })}
@@ -823,13 +848,13 @@ const Settings = ({ theme, setTheme }) => {
                             <input
                                 autoComplete="new-password"
                                 type="password"
-                                minLength={6}
                                 required
                                 value={password.confirmPassword}
                                 onChange={(event) => setPassword({ ...password, confirmPassword: event.target.value })}
                             />
                         </label>
                     </div>
+                    <p className="settings-field-hint">Use 12–128 characters. Long passphrases and spaces are allowed.</p>
                     <div className="settings-form-footer">
                         {passwordStatus && (
                             <p className={`settings-status ${passwordStatus.type}`} role="status">{passwordStatus.text}</p>

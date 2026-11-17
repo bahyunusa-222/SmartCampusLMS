@@ -46,6 +46,7 @@ const Submission = sequelize.define("Submission", {
 
 }, {
     indexes: [
+        { unique: true, name: "submissions_student_assignment_unique", fields: ["studentId", "assignmentId"] },
         { fields: ["studentId", "createdAt"] },
         { fields: ["assignmentId", "createdAt"] },
         { fields: ["assignmentId", "grade"] }

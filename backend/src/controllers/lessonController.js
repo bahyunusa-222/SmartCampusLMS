@@ -10,6 +10,7 @@ const LessonProgress = require("../models/LessonProgress");
 const { sequelize } = require("../config/db");
 const materialUpload = require("../utils/materialUpload");
 const { removeStoredUpload } = require("../utils/storedUpload");
+const { attachFileReference, findFileReference, removeFileReference } = require("../utils/fileReferences");
 const { hasCoursePermission } = require("../utils/coursePermissions");
 
 const isValidResourceUrl = (value) => {
@@ -104,7 +105,8 @@ exports.createLesson = async (req, res) => {
         }
 
         uploadedFile = await materialUpload(req.file, req.body, req.user.id);
-        const lesson = await Lesson.create({
+        const lesson = await sequelize.transaction(async (transaction) => {
+            const created = await Lesson.create({
             title: title.trim(),
             content: typeof content === "string" ? content.trim() : "",
             description: typeof req.body.description === "string" ? req.body.description.trim() || null : null,
@@ -116,7 +118,18 @@ exports.createLesson = async (req, res) => {
             fileName: uploadedFile?.fileName || null,
             mimeType: uploadedFile?.mimeType || null,
             fileSize: uploadedFile?.fileSize || null,
-            uploadedById: req.user.id
+                uploadedById: req.user.id
+            }, { transaction });
+            if (uploadedFile?.storedFileId) {
+                await attachFileReference({
+                    fileId: uploadedFile.storedFileId,
+                    resourceType: "lesson",
+                    resourceId: created.id,
+                    ownerId: req.user.id,
+                    transaction
+                });
+            }
+            return created;
         });
 
         res.status(201).json({
@@ -219,7 +232,29 @@ exports.updateLesson = async (req, res) => {
             await discardUpload(req.file);
             return res.status(400).json({ message: "At least one material field must be provided" });
         }
-        await lesson.update(updates);
+        const oldReference = previousFileUrl
+            ? await findFileReference({ resourceType: "lesson", resourceId: lesson.id })
+            : null;
+        await sequelize.transaction(async (transaction) => {
+            await lesson.update(updates, { transaction });
+            if (oldReference) {
+                await removeFileReference({
+                    fileId: oldReference.fileId,
+                    resourceType: "lesson",
+                    resourceId: lesson.id,
+                    transaction
+                });
+            }
+            if (uploadedFile?.storedFileId) {
+                await attachFileReference({
+                    fileId: uploadedFile.storedFileId,
+                    resourceType: "lesson",
+                    resourceId: lesson.id,
+                    ownerId: req.user.id,
+                    transaction
+                });
+            }
+        });
         if (previousFileUrl) {
             try {
                 await removeMaterialFile(previousFileUrl);
@@ -256,9 +291,18 @@ exports.deleteLesson = async (req, res) => {
             return res.status(404).json({ message: "Course material not found" });
         }
         const fileUrl = lesson.fileUrl;
+        const reference = await findFileReference({ resourceType: "lesson", resourceId: lesson.id });
         await sequelize.transaction(async (transaction) => {
             await LessonNote.destroy({ where: { lessonId: lesson.id }, transaction });
             await LessonProgress.destroy({ where: { lessonId: lesson.id }, transaction });
+            if (reference) {
+                await removeFileReference({
+                    fileId: reference.fileId,
+                    resourceType: "lesson",
+                    resourceId: lesson.id,
+                    transaction
+                });
+            }
             await lesson.destroy({ transaction });
         });
         if (fileUrl) await removeMaterialFile(fileUrl);

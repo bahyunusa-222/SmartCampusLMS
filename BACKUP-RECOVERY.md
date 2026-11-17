@@ -1,12 +1,12 @@
 # SmartCampus backup and recovery
 
 Database backups and uploaded files are separate recovery concerns. A database
-backup does not include objects in the Supabase Storage bucket.
+backup does not include objects in Cloudflare R2 or Supabase Storage.
 
 ## Production requirements
 
 - Enable automated encrypted backups and point-in-time recovery for the Supabase PostgreSQL database. Retain backups according to the institution's recovery requirements and keep a separate copy outside the database provider account.
-- Course materials, assignment files, and submissions are stored in the private Supabase Storage bucket configured in `DEPLOYMENT.md`. Include that bucket in the backup and recovery plan; do not treat Vercel's `/tmp` or `UPLOADS_DIR` as persistent storage.
+- New course materials, assignment files, submissions, and chat attachments are stored in the private Cloudflare R2 bucket when configured. Include the R2 bucket and any retained legacy Supabase Storage bucket in the backup and recovery plan; do not treat Vercel's `/tmp` or `UPLOADS_DIR` as persistent storage.
 - Restrict backup and object-storage access to the deployment team. Backups contain personal information, submissions, and grade history; do not put them in the repository or an unencrypted shared drive.
 - Configure `PASSWORD_RESET_DELIVERY_URL`, `PASSWORD_RESET_DELIVERY_SECRET` (at least 32 characters), and `PASSWORD_RESET_PAGE_URL` in the Vercel project environment. The delivery endpoint must authenticate `X-Reset-Delivery-Secret` and send the provided HTTPS link only to the supplied account email. The app does not send email itself.
 
